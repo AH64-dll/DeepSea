@@ -35,10 +35,9 @@ own disc the first time you press Play. It checks that the disc files are
 the USA release, translates the game's code, and compiles it with the
 bundled compiler. Nothing is downloaded.
 
-- It takes about 10 minutes, depending on your CPU (7 to 9 minutes on a
-  6-core laptop). A progress bar
-  shows in `DeepSea.exe`; `Play Deep Sea.cmd` shows it in the
-  console. Cancel is safe, and the next Play starts over.
+- It takes about 10 minutes on a 6-core laptop, less on faster CPUs.
+  A progress bar shows in `DeepSea.exe`; `Play Deep Sea.cmd` shows it
+  in the console. Cancel is safe, and the next Play starts over.
 - It needs about 2 GB free while it runs. Afterwards it keeps about
   500 MB in `assets\user-dir\modules\`.
 - Later launches check the saved build in a few seconds and start right
