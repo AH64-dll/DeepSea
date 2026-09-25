@@ -1,0 +1,1001 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Deep Sea</title>
+<meta name="description" content="Deep Sea: a free, open-source native Windows port of The Wind Waker that you build from your own GameCube disc. 60 fps, true widescreen, controller-ready.">
+<meta name="theme-color" content="#1B5CC2">
+<meta property="og:title" content="Deep Sea">
+<meta property="og:description" content="Sail the Great Sea at 60 fps. A free, open-source native PC port you build from your own disc.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://ah64-dll.github.io/DeepSea/">
+<meta property="og:image" content="https://ah64-dll.github.io/DeepSea/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The Great Sea, now at 60 fps: a toon sea with a sailboat and a pixel-art deckhand on the beach.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath fill='%235BC0F8' d='M2 0h12v1h-12zM1 1h6v1h-6zM8 1h4v1h-4zM14 1h1v1h-1zM0 2h7v1h-7zM9 2h2v1h-2zM15 2h1v1h-1zM0 3h7v1h-7zM10 3h1v1h-1zM15 3h1v1h-1zM0 4h7v1h-7zM11 4h1v1h-1zM14 4h2v1h-2zM0 5h7v1h-7zM12 5h4v1h-4zM0 6h7v1h-7zM13 6h3v1h-3zM0 7h7v1h-7zM14 7h2v1h-2zM0 8h3v1h-3zM14 8h2v1h-2zM0 9h3v1h-3zM14 9h2v1h-2z'/%3E%3Cpath fill='%23FFD65A' d='M12 1h2v1h-2zM11 2h4v1h-4zM11 3h4v1h-4zM12 4h2v1h-2z'/%3E%3Cpath fill='%231F2740' d='M7 1h1v1h-1zM7 2h1v1h-1zM7 3h1v1h-1zM7 4h1v1h-1zM7 5h1v1h-1zM7 6h1v1h-1zM7 7h1v1h-1z'/%3E%3Cpath fill='%23FFF6DC' d='M8 2h1v1h-1zM8 3h2v1h-2zM8 4h3v1h-3zM8 6h5v1h-5zM8 7h6v1h-6z'/%3E%3Cpath fill='%23E4573D' d='M8 5h4v1h-4z'/%3E%3Cpath fill='%23A45A2F' d='M3 8h11v1h-11zM4 9h9v1h-9z'/%3E%3Cpath fill='%23FFFFFF' d='M3 9h1v1h-1zM13 9h1v1h-1zM4 10h9v1h-9zM1 11h2v1h-2zM13 11h2v1h-2zM7 12h2v1h-2z'/%3E%3Cpath fill='%232E7FE0' d='M0 10h4v1h-4zM13 10h3v1h-3zM0 11h1v1h-1zM3 11h10v1h-10zM15 11h1v1h-1z'/%3E%3Cpath fill='%231B5CC2' d='M0 12h7v1h-7zM9 12h7v1h-7z'/%3E%3Cpath fill='%230E3E96' d='M0 13h4v1h-4zM5 13h11v1h-11z'/%3E%3Cpath fill='%23072B6E' d='M1 14h8v1h-8zM10 14h5v1h-5zM2 15h12v1h-12z'/%3E%3Cpath fill='%238FC4F5' d='M4 13h1v1h-1zM9 14h1v1h-1z'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Nunito:wght@400;600;800&family=Pixelify+Sans:wght@400;600&display=swap">
+<style>
+  :root {
+    color-scheme: light;
+    --sky-hi: #3FA9EE;
+    --sky-lo: #C4ECFF;
+    --sea-hi: #2670D3;
+    --sea: #1B5CC2;
+    --sea-deep: #0E3E96;
+    --abyss: #072B6E;
+    --trench: #041B47;
+    --foam: #FFFFFF;
+    --foam-soft: #D3E6FF;
+    --sand: #F4D99A;
+    --sand-wet: #E2BF78;
+    --parchment: #F7EACB;
+    --parchment-edge: #E3CB95;
+    --ink: #1F2740;
+    --ink-soft: #4A5370;
+    --gold: #FFC83D;
+    --gold-deep: #D99A0B;
+    --coral: #E4573D;
+    --navy-line: #10306B;
+    --display: "Lilita One", "Arial Rounded MT Bold", "Trebuchet MS", sans-serif;
+    --body: "Nunito", "Segoe UI", system-ui, sans-serif;
+    --pixel: "Pixelify Sans", "Consolas", ui-monospace, monospace;
+    --wrap: 1120px;
+    --gutter: clamp(16px, 4vw, 32px);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0;
+    font: 400 17px/1.6 var(--body);
+    color: var(--foam);
+    background: linear-gradient(180deg, var(--sea) 0%, var(--sea-deep) 30%, var(--abyss) 65%, var(--trench) 100%);
+    background-color: var(--trench);
+    overflow-x: hidden;
+  }
+  a { color: inherit; }
+  img, canvas, svg { max-width: 100%; }
+  :focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; border-radius: 4px; }
+  .skip { position: absolute; left: -999px; top: 8px; z-index: 50; background: var(--gold); color: var(--ink); padding: 8px 14px; font-family: var(--pixel); }
+  .skip:focus { left: 12px; }
+  .wrap { max-width: var(--wrap); margin-inline: auto; padding-inline: var(--gutter); }
+
+  /* ---------- top HUD ---------- */
+  .hud {
+    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20;
+    background: rgba(7, 32, 84, 0.82);
+    backdrop-filter: blur(8px);
+    border-bottom: 3px solid var(--navy-line);
+  }
+  .hud .wrap { display: flex; align-items: center; gap: 20px; min-height: 58px; }
+  .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font-family: var(--display); font-size: 22px; letter-spacing: 0.01em; }
+  .brand svg { width: 30px; height: 30px; image-rendering: pixelated; }
+  .hud nav { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
+  .hud nav a { font-family: var(--pixel); font-size: 15px; text-decoration: none; padding: 6px 10px; border-radius: 6px; color: var(--foam-soft); }
+  .hud nav a:hover { color: var(--foam); background: rgba(255,255,255,0.1); }
+  .hud .get { font-family: var(--pixel); font-weight: 600; font-size: 15px; text-decoration: none; color: var(--ink); background: var(--gold); border: 2px solid var(--ink); box-shadow: 3px 3px 0 var(--ink); padding: 6px 12px; border-radius: 6px; white-space: nowrap; }
+  .hud .get:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--ink); }
+  @media (max-width: 720px) { .hud nav { display: none; } .hud .get { margin-left: auto; } }
+
+  /* ---------- hero: the Great Sea ---------- */
+  .hero {
+    position: relative;
+    min-height: clamp(640px, 88vh, 860px);
+    background: linear-gradient(180deg, var(--sky-hi) 0%, #7CCBF6 38%, var(--sky-lo) 58%);
+    overflow: hidden;
+    isolation: isolate;
+  }
+  .hero canvas.sea { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; }
+  .hero .wrap { position: relative; z-index: 2; padding-block: clamp(36px, 7vh, 80px) 290px; }
+  .hero-copy { max-width: 640px; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--pixel); font-size: 15px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--navy-line); background: rgba(255,255,255,0.7); border: 2px solid var(--navy-line);
+    border-radius: 999px; padding: 4px 12px;
+  }
+  .eyebrow b { font-weight: 600; color: var(--coral); font-variant-numeric: tabular-nums; min-width: 3ch; text-align: right; }
+  h1 {
+    font-family: var(--display); font-weight: 400;
+    font-size: clamp(44px, 7.4vw, 88px); line-height: 0.98; margin: 18px 0 16px;
+    color: var(--foam); text-wrap: balance;
+    text-shadow:
+      3px 0 0 var(--navy-line), -3px 0 0 var(--navy-line), 0 3px 0 var(--navy-line), 0 -3px 0 var(--navy-line),
+      2px 2px 0 var(--navy-line), -2px -2px 0 var(--navy-line), 2px -2px 0 var(--navy-line), -2px 2px 0 var(--navy-line),
+      0 8px 0 rgba(16, 48, 107, 0.35);
+  }
+  h1 .gold { color: var(--gold); }
+  .lede { font-size: clamp(17px, 2vw, 20px); font-weight: 600; color: var(--navy-line); max-width: 36em; margin: 0 0 26px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 10px;
+    font-family: var(--pixel); font-weight: 600; font-size: 18px; text-decoration: none;
+    padding: 12px 20px; border-radius: 8px; border: 3px solid var(--ink);
+    transition: transform .12s ease, box-shadow .12s ease;
+  }
+  .btn svg { width: 20px; height: 20px; }
+  .btn-gold { background: var(--gold); color: var(--ink); box-shadow: 5px 5px 0 var(--ink); }
+  .btn-gold:hover { transform: translate(-2px, -2px); box-shadow: 7px 7px 0 var(--ink); }
+  .btn-gold:active { transform: translate(3px, 3px); box-shadow: 2px 2px 0 var(--ink); }
+  .btn-ghost { background: rgba(255,255,255,0.85); color: var(--navy-line); box-shadow: 5px 5px 0 var(--navy-line); border-color: var(--navy-line); }
+  .btn-ghost:hover { transform: translate(-2px, -2px); box-shadow: 7px 7px 0 var(--navy-line); }
+  .fine { margin: 18px 0 0; font-size: 14px; font-weight: 600; color: var(--navy-line); opacity: 0.85; max-width: 34em; }
+  .beach {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 84px; z-index: 1;
+    background:
+      radial-gradient(ellipse 6px 3px at 20% 60%, rgba(160,110,40,0.35) 98%, transparent) ,
+      radial-gradient(ellipse 5px 2px at 63% 40%, rgba(160,110,40,0.3) 98%, transparent),
+      radial-gradient(ellipse 4px 2px at 81% 75%, rgba(160,110,40,0.3) 98%, transparent),
+      linear-gradient(180deg, var(--sand-wet) 0 14px, var(--sand) 14px);
+  }
+  .beach::before {
+    content: ""; position: absolute; left: 0; right: 0; top: -12px; height: 18px;
+    background:
+      radial-gradient(circle at 12px -2px, transparent 12px, var(--foam) 12.5px 16px, transparent 16.5px) 0 0 / 24px 18px repeat-x;
+    animation: lap 5s ease-in-out infinite;
+  }
+  @keyframes lap { 50% { transform: translateY(4px); } }
+  @media (prefers-reduced-motion: reduce) { .beach::before { animation: none; } }
+
+  /* ---------- sections ---------- */
+  section { padding-block: clamp(64px, 10vw, 112px); position: relative; }
+  .kicker { font-family: var(--pixel); font-size: 15px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--gold); margin: 0 0 10px; }
+  h2 { font-family: var(--display); font-weight: 400; font-size: clamp(34px, 5vw, 56px); line-height: 1.02; margin: 0 0 16px; text-wrap: balance; }
+  .intro { max-width: 40em; color: var(--foam-soft); margin: 0 0 40px; font-size: 18px; }
+  h3 { font-family: var(--display); font-weight: 400; font-size: 24px; line-height: 1.15; margin: 0 0 8px; }
+
+  .parchment {
+    background: var(--parchment);
+    color: var(--ink);
+    border: 3px solid var(--ink);
+    border-radius: 14px;
+    box-shadow: 0 6px 0 var(--parchment-edge), 0 6px 0 3px var(--ink), 0 24px 40px rgba(2, 12, 40, 0.35);
+  }
+
+  /* features */
+  .aboard { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 44px 32px; padding-top: 72px; }
+  @media (max-width: 900px) { .aboard { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 560px) { .aboard { grid-template-columns: 1fr; } }
+  .card { padding: 26px 24px 24px; position: relative; }
+  .card p { margin: 0; color: var(--ink-soft); font-size: 16px; }
+  .card .ico { width: 48px; height: 48px; margin-bottom: 14px; image-rendering: pixelated; }
+  .card .tag { position: absolute; top: 18px; right: 18px; font-family: var(--pixel); font-size: 13px; color: var(--sea); background: #E9F1FF; border: 2px solid var(--sea); border-radius: 6px; padding: 1px 7px; }
+
+  /* log / stats */
+  .log { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; margin-top: 80px; border-top: 2px dashed rgba(211, 230, 255, 0.35); padding-top: 36px; }
+  @media (max-width: 860px) { .log { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .log div { display: grid; gap: 6px; align-content: start; }
+  .log strong { font-family: var(--display); font-weight: 400; font-size: clamp(40px, 5vw, 60px); line-height: 1; color: var(--gold); font-variant-numeric: tabular-nums; }
+  .log span { color: var(--foam-soft); font-size: 15px; max-width: 18em; }
+
+  /* voyage */
+  .chart { padding: clamp(24px, 4vw, 44px); position: relative; overflow: hidden; }
+  .chart::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0.5;
+    background-image:
+      linear-gradient(rgba(27, 92, 194, 0.12) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(27, 92, 194, 0.12) 1px, transparent 1px);
+    background-size: 44px 44px;
+  }
+  .route { position: absolute; left: 6%; right: 6%; top: 110px; height: 40px; pointer-events: none; }
+  .route path { fill: none; stroke: var(--coral); stroke-width: 3; stroke-dasharray: 2 10; stroke-linecap: round; }
+  .isles { position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 40px 28px; list-style: none; margin: 0; padding: 70px 0 0; }
+  @media (max-width: 860px) { .isles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .route { display: none; } }
+  @media (max-width: 520px) { .isles { grid-template-columns: 1fr; } }
+  .isle { display: grid; gap: 10px; align-content: start; }
+  .mound {
+    position: relative; height: 64px; margin-inline: 8%;
+    background: var(--sand); border: 3px solid var(--ink); border-bottom: 0;
+    border-radius: 50% 50% 0 0 / 100% 100% 0 0;
+    box-shadow: inset 0 -12px 0 var(--sand-wet);
+  }
+  .mound::after {
+    content: ""; position: absolute; left: -12%; right: -12%; bottom: -8px; height: 12px;
+    background: #8FC4F5; border: 3px solid var(--ink); border-radius: 12px;
+  }
+  .mound .num {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -40%);
+    font-family: var(--pixel); font-weight: 600; font-size: 22px; color: var(--ink);
+    background: var(--foam); border: 3px solid var(--ink); border-radius: 8px; width: 38px; height: 34px;
+    display: grid; place-items: center; line-height: 1;
+  }
+  .isle h3 { margin-top: 18px; }
+  .isle p { margin: 0; color: var(--ink-soft); font-size: 15.5px; }
+
+  /* manifest */
+  .manifest { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px; }
+  @media (max-width: 760px) { .manifest { grid-template-columns: 1fr; } }
+  .hold { padding: 28px 28px 24px; }
+  .hold h3 { display: flex; align-items: center; gap: 10px; }
+  .hold h3 small { font-family: var(--pixel); font-size: 14px; color: var(--sea); font-weight: 400; }
+  .hold ul { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 12px; }
+  .hold li { display: grid; grid-template-columns: 22px 1fr; gap: 12px; align-items: start; color: var(--ink-soft); font-size: 16px; }
+  .hold li b { color: var(--ink); font-weight: 800; }
+  .hold li::before { content: ""; width: 14px; height: 14px; margin-top: 6px; background: var(--coral); border: 2px solid var(--ink); transform: rotate(45deg); }
+  .hold.ours li::before { background: var(--gold); }
+  .space { margin-top: 32px; display: flex; flex-wrap: wrap; gap: 12px 28px; font-family: var(--pixel); font-size: 15px; color: var(--foam-soft); }
+  .space span b { color: var(--foam); font-weight: 600; }
+
+  /* faq */
+  .faq { display: grid; gap: 14px; max-width: 860px; }
+  .faq details { padding: 0; }
+  .faq summary {
+    cursor: pointer; list-style: none; padding: 18px 56px 18px 22px; position: relative;
+    font-family: var(--display); font-size: 21px; line-height: 1.25;
+  }
+  .faq summary::-webkit-details-marker { display: none; }
+  .faq summary::after {
+    content: "+"; position: absolute; right: 20px; top: 50%; transform: translateY(-50%);
+    font-family: var(--pixel); font-size: 26px; color: var(--sea);
+  }
+  .faq details[open] summary::after { content: "\2212"; }
+  .faq .a { padding: 0 22px 20px; color: var(--ink-soft); }
+  .faq .a p { margin: 0 0 10px; }
+  .faq .a p:last-child { margin: 0; }
+  code { font-family: var(--pixel); font-size: 0.95em; background: rgba(27, 92, 194, 0.1); padding: 1px 6px; border-radius: 4px; color: var(--sea-deep); }
+
+  /* footer */
+  footer { padding-block: 72px 110px; border-top: 3px solid rgba(211, 230, 255, 0.2); position: relative; }
+  .foot { display: grid; grid-template-columns: 1.3fr 1fr; gap: 40px; }
+  @media (max-width: 760px) { .foot { grid-template-columns: 1fr; } }
+  .foot h3 { color: var(--gold); }
+  .foot p, .foot li { color: var(--foam-soft); font-size: 15px; }
+  .credits { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+  .credits b { color: var(--foam); font-weight: 800; }
+  .legal { margin-top: 36px; font-size: 13.5px; color: rgba(211, 230, 255, 0.75); max-width: 60em; }
+  .links { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 18px; font-family: var(--pixel); }
+  .links a { color: var(--foam); }
+
+  /* ---------- the deckhand ---------- */
+  #deckhand { position: absolute; left: 0; top: 0; width: 120px; height: 150px; pointer-events: none; z-index: 15; image-rendering: pixelated; will-change: transform; }
+  #deckhand-hit {
+    position: absolute; left: 0; top: 0; width: 48px; height: 60px; z-index: 16;
+    background: transparent; border: 0; padding: 0; cursor: pointer; border-radius: 8px;
+  }
+  .bubble {
+    position: absolute; left: 0; top: 0; z-index: 17; max-width: 230px; width: max-content;
+    font-family: var(--pixel); font-size: 15px; line-height: 1.3; color: var(--ink);
+    background: var(--foam); border: 3px solid var(--ink); border-radius: 10px; padding: 8px 12px;
+    box-shadow: 3px 3px 0 var(--ink); pointer-events: none;
+    opacity: 0; transform: translate(-50%, 6px); transition: opacity .18s ease, transform .18s ease;
+  }
+  .bubble.on { opacity: 1; transform: translate(-50%, 0); }
+  .bubble::after {
+    content: ""; position: absolute; left: calc(50% + var(--tail, 0px)); bottom: -10px; width: 14px; height: 14px; margin-left: -7px;
+    background: var(--foam); border-right: 3px solid var(--ink); border-bottom: 3px solid var(--ink); transform: rotate(45deg);
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="hud">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="Deep Sea home">
+      <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges"><path fill="#5BC0F8" d="M2 0h12v1h-12zM1 1h6v1h-6zM8 1h4v1h-4zM14 1h1v1h-1zM0 2h7v1h-7zM9 2h2v1h-2zM15 2h1v1h-1zM0 3h7v1h-7zM10 3h1v1h-1zM15 3h1v1h-1zM0 4h7v1h-7zM11 4h1v1h-1zM14 4h2v1h-2zM0 5h7v1h-7zM12 5h4v1h-4zM0 6h7v1h-7zM13 6h3v1h-3zM0 7h7v1h-7zM14 7h2v1h-2zM0 8h3v1h-3zM14 8h2v1h-2zM0 9h3v1h-3zM14 9h2v1h-2z"/><path fill="#FFD65A" d="M12 1h2v1h-2zM11 2h4v1h-4zM11 3h4v1h-4zM12 4h2v1h-2z"/><path fill="#1F2740" d="M7 1h1v1h-1zM7 2h1v1h-1zM7 3h1v1h-1zM7 4h1v1h-1zM7 5h1v1h-1zM7 6h1v1h-1zM7 7h1v1h-1z"/><path fill="#FFF6DC" d="M8 2h1v1h-1zM8 3h2v1h-2zM8 4h3v1h-3zM8 6h5v1h-5zM8 7h6v1h-6z"/><path fill="#E4573D" d="M8 5h4v1h-4z"/><path fill="#A45A2F" d="M3 8h11v1h-11zM4 9h9v1h-9z"/><path fill="#FFFFFF" d="M3 9h1v1h-1zM13 9h1v1h-1zM4 10h9v1h-9zM1 11h2v1h-2zM13 11h2v1h-2zM7 12h2v1h-2z"/><path fill="#2E7FE0" d="M0 10h4v1h-4zM13 10h3v1h-3zM0 11h1v1h-1zM3 11h10v1h-10zM15 11h1v1h-1z"/><path fill="#1B5CC2" d="M0 12h7v1h-7zM9 12h7v1h-7z"/><path fill="#0E3E96" d="M0 13h4v1h-4zM5 13h11v1h-11z"/><path fill="#072B6E" d="M1 14h8v1h-8zM10 14h5v1h-5zM2 15h12v1h-12z"/><path fill="#8FC4F5" d="M4 13h1v1h-1zM9 14h1v1h-1z"/></svg>
+      Deep Sea
+    </a>
+    <nav aria-label="Sections">
+      <a href="#aboard">Features</a>
+      <a href="#voyage">Setup</a>
+      <a href="#manifest">Requirements</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://github.com/AH64-dll/DeepSea">Source</a>
+    </nav>
+    <a class="get" href="https://github.com/AH64-dll/DeepSea/releases/latest">Download</a>
+  </div>
+</header>
+
+<main id="main">
+  <div class="hero" id="top">
+    <canvas class="sea" aria-hidden="true"></canvas>
+    <div class="wrap">
+      <div class="hero-copy">
+        <span class="eyebrow">Open source · this page: <b id="fps">60</b> fps</span>
+        <h1>The Great Sea, <span class="gold">now at 60&nbsp;fps.</span></h1>
+        <p class="lede">Deep Sea is a native Windows port of <em>The Legend of Zelda: The Wind Waker</em>. It rebuilds the game from your own GameCube disc, then sails it at a smooth 60&nbsp;fps in true widescreen.</p>
+        <div class="cta">
+          <a class="btn btn-gold" href="https://github.com/AH64-dll/DeepSea/releases/latest">
+            <svg viewBox="0 0 10 10" shape-rendering="crispEdges" aria-hidden="true"><path d="M4 0h2v5h2v1H7v1H6v1H4V7H3V6H2V5h2zM0 9h10v1H0z" fill="currentColor"/></svg>
+            Download for Windows
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/AH64-dll/DeepSea">Read the source</a>
+        </div>
+        <p class="fine">No game files included. You need your own USA copy of the game (GameCube, GZLE01). Windows 10/11, 64-bit.</p>
+      </div>
+    </div>
+    <div class="beach" data-ground data-ground-offset="30" aria-hidden="true"></div>
+  </div>
+
+  <section id="aboard">
+    <div class="wrap">
+      <p class="kicker">What's aboard</p>
+      <h2>Your ship, rebuilt for PC</h2>
+      <p class="intro">The game's own code, translated to run natively on your computer, with the extras a modern PC can give it.</p>
+      <div class="aboard">
+        <article class="card parchment" data-ground>
+          <svg class="ico" viewBox="0 0 12 12" shape-rendering="crispEdges" aria-hidden="true"><path d="M3 0h2v2H3zM7 0h2v2H7zM3 10h2v2H3zM7 10h2v2H7zM0 3h2v2H0zM0 7h2v2H0zM10 3h2v2h-2zM10 7h2v2h-2z" fill="#1F2740"/><path d="M2 2h8v8H2z" fill="#1F2740"/><path d="M3 3h6v6H3z" fill="#1B5CC2"/><path d="M4 4h4v4H4z" fill="#FFC83D"/><path d="M5 5h2v2H5z" fill="#E4573D"/></svg>
+          <h3>Native, not emulated</h3>
+          <p>The game's PowerPC code is translated into x64 code before you play, so the processor work runs directly on your CPU instead of being interpreted.</p>
+        </article>
+        <article class="card parchment" data-ground>
+          <span class="tag">60 fps</span>
+          <svg class="ico" viewBox="0 0 12 12" shape-rendering="crispEdges" aria-hidden="true"><path d="M3 1h6v1h1v1h1v6h-1v1H2V9H1V3h1V2h1z" fill="#1F2740"/><path d="M3 2h6v1h1v6H2V3h1z" fill="#F7EACB"/><path d="M6 3h1v3H6zM7 5h2v1H7z" fill="#E4573D"/><path d="M3 11h6v1H3z" fill="#1F2740"/></svg>
+          <h3>A real 60 fps</h3>
+          <p>In-between frames are rendered and paced to your display's refresh. If your PC can't keep up, it steps down to 30 fps instead of slowing the game.</p>
+        </article>
+        <article class="card parchment" data-ground>
+          <svg class="ico" viewBox="0 0 12 12" shape-rendering="crispEdges" aria-hidden="true"><path d="M0 2h12v8H0z" fill="#1F2740"/><path d="M1 3h10v6H1z" fill="#8FC4F5"/><path d="M1 7h10v2H1z" fill="#1B5CC2"/><path d="M1 3h1v6H1zM10 3h1v6h-1z" fill="#FFC83D"/></svg>
+          <h3>True widescreen</h3>
+          <p>At 16:9 the camera sees more of the sea and the HUD moves out to the edges. Nothing is stretched, and 4:3 plays exactly like the original.</p>
+        </article>
+        <article class="card parchment" data-ground>
+          <svg class="ico" viewBox="0 0 12 12" shape-rendering="crispEdges" aria-hidden="true"><path d="M4 0h4v1h2v1h1v2h1v4h-1v2h-1v1H8v1H4v-1H2v-1H1V8H0V4h1V2h1V1h2z" fill="#1F2740"/><path d="M4 1h4v1h2v2h1v4h-1v2H8v1H4v-1H2V8H1V4h1V2h2z" fill="#D8DEE9"/><path d="M5 5h2v2H5z" fill="#1F2740"/><path d="M3 3h2v1H3zM2 4h1v1H2z" fill="#FFFFFF"/></svg>
+          <h3>Your disc, your build</h3>
+          <p>No game files come with the download. The first launch builds the game from your own USA disc, right on your PC.</p>
+        </article>
+        <article class="card parchment" data-ground>
+          <svg class="ico" viewBox="0 0 12 12" shape-rendering="crispEdges" aria-hidden="true"><path d="M2 3h8v1h1v1h1v4h-1v1H9V9H3v1H1V9H0V5h1V4h1z" fill="#1F2740"/><path d="M2 4h8v1h1v4h-1V8H2v1H1V5h1z" fill="#F7EACB"/><path d="M3 5h1v1h1v1H4v1H3V7H2V6h1zM8 5h1v1H8zM9 6h1v1H9z" fill="#1B5CC2"/><path d="M7 6h1v1H7z" fill="#E4573D"/></svg>
+          <h3>Controllers ready</h3>
+          <p>Xbox-style pads work out of the box. DirectInput pads and the keyboard work too, and every button can be remapped in the launcher.</p>
+        </article>
+        <article class="card parchment" data-ground>
+          <svg class="ico" viewBox="0 0 13 13" shape-rendering="crispEdges" aria-hidden="true"><g transform="translate(1 2)" fill="#1F2740"><path d="M1 2h1v1h1v1h1v1h1v2h-1v1h-1v1h-1v1H1z"/><path d="M6 2h1v1h1v1h1v1h1v2h-1v1h-1v1h-1v1H6z"/><path d="M11 2h1v8h-1z"/></g><g transform="translate(0 1)" fill="#FFC83D"><path d="M1 2h1v1h1v1h1v1h1v2h-1v1h-1v1h-1v1H1z"/><path d="M6 2h1v1h1v1h1v1h1v2h-1v1h-1v1h-1v1H6z"/><path d="M11 2h1v8h-1z"/></g></svg>
+          <h3>Skip the long scenes</h3>
+          <p>Hold Z + Start (RB + Start on an Xbox pad) to skip a cutscene. F1 saves a state, and holding Space fast-forwards.</p>
+        </article>
+      </div>
+
+      <div class="log" aria-label="By the numbers">
+        <div><strong>60</strong><span>frames a second, paced to your display</span></div>
+        <div><strong>416</strong><span>pieces of game code translated: the main program and 415 modules</span></div>
+        <div><strong>16:9</strong><span>widescreen that widens the view, not the pixels</span></div>
+        <div><strong>0</strong><span>game files in the download</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="voyage">
+    <div class="wrap">
+      <p class="kicker">The voyage</p>
+      <h2>From your disc to the open sea</h2>
+      <p class="intro">Setup happens once. After that, every launch goes straight to the title screen.</p>
+      <div class="chart parchment" data-ground>
+        <svg class="route" viewBox="0 0 1000 40" preserveAspectRatio="none" aria-hidden="true"><path d="M60 20 C 200 -10, 300 50, 375 20 S 560 -10, 625 20 S 820 50, 940 20"/></svg>
+        <ol class="isles">
+          <li class="isle">
+            <div class="mound" data-ground data-ground-inset="10"><span class="num">1</span></div>
+            <h3>Download</h3>
+            <p>Grab the bundle and unzip it anywhere you like. It carries the runtime, the translator and a compiler.</p>
+          </li>
+          <li class="isle">
+            <div class="mound" data-ground data-ground-inset="10"><span class="num">2</span></div>
+            <h3>Point it at your disc</h3>
+            <p>Pick your extracted USA disc folder, or let the launcher unpack an ISO, WBFS or RVZ image of your own copy.</p>
+          </li>
+          <li class="isle">
+            <div class="mound" data-ground data-ground-inset="10"><span class="num">3</span></div>
+            <h3>Let it build, once</h3>
+            <p>The first launch translates the game's code and compiles it for your processor. It takes 30–90 minutes, with a progress bar.</p>
+          </li>
+          <li class="isle">
+            <div class="mound" data-ground data-ground-inset="10"><span class="num">4</span></div>
+            <h3>Set sail</h3>
+            <p>60 fps, 16:9 and your controller. Later launches check the build in a few seconds and start right away.</p>
+          </li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section id="manifest">
+    <div class="wrap">
+      <p class="kicker">Ship's manifest</p>
+      <h2>What you bring, what we bring</h2>
+      <p class="intro">Everything in the download is free software. The game itself stays yours.</p>
+      <div class="manifest">
+        <div class="hold parchment" data-ground>
+          <h3>You bring <small>required</small></h3>
+          <ul>
+            <li><span><b>Your own copy of the game</b>: the USA GameCube release (GZLE01). European, Japanese and HD versions aren't supported.</span></li>
+            <li><span><b>Windows 10 or 11</b>, 64-bit.</span></li>
+            <li><span><b>A graphics card with Vulkan 1.1</b>. Any GPU from the last several years with current drivers.</span></li>
+            <li><span><b>A controller</b> if you like. The keyboard works too.</span></li>
+          </ul>
+        </div>
+        <div class="hold ours parchment" data-ground>
+          <h3>We bring <small>in the download</small></h3>
+          <ul>
+            <li><span><b>The runtime</b>: graphics, audio and input, built on the Dolphin emulator's hardware code.</span></li>
+            <li><span><b>The translator</b> that turns the game's PowerPC code into C.</span></li>
+            <li><span><b>A compiler</b> (LLVM/Clang) and a small Python that run the one-time build.</span></li>
+            <li><span><b>Mods</b>: 60 fps, widescreen and cutscene skip, each with an off switch.</span></li>
+          </ul>
+        </div>
+      </div>
+      <p class="space"><span>Free space during setup <b>≈ 2 GB</b></span><span>Kept after setup <b>≈ 200 MB</b></span><span>Download <b data-fill="bundle-size">≈ 110 MB</b></span></p>
+    </div>
+  </section>
+
+  <section id="faq">
+    <div class="wrap">
+      <p class="kicker">From the crow's nest</p>
+      <h2>Questions</h2>
+      <div class="faq">
+        <details class="parchment" data-ground>
+          <summary>Is the game included?</summary>
+          <div class="a"><p>No. The download contains only free software: the runtime, the code translator and a compiler. You supply your own copy of the game, and the game's code is translated on your PC from that copy.</p></div>
+        </details>
+        <details class="parchment">
+          <summary>Why does the first launch take so long?</summary>
+          <div class="a"><p>It translates about 416 pieces of game code into C and compiles them into one optimized module, tuned for your processor. That takes 30–90 minutes depending on your CPU. You can cancel safely; the next launch starts over.</p><p>The result is saved, so later launches only run a quick check. If you move the bundle to a PC with a different processor, it builds again there by itself.</p></div>
+        </details>
+        <details class="parchment">
+          <summary>Which version of the game do I need?</summary>
+          <div class="a"><p>The North American GameCube disc, game ID <code>GZLE01</code>. Setup checks every file it needs and tells you if your copy is a different or damaged release.</p></div>
+        </details>
+        <details class="parchment">
+          <summary>How does it work?</summary>
+          <div class="a"><p>It's a static recompilation. A translator (DolRecomp) reads the game's PowerPC machine code and writes equivalent C. A compiler (Clang) turns that into x64 code for your CPU, and a runtime built on the Dolphin emulator's hardware code provides graphics (Vulkan), audio and input.</p><p>What the port knows about the game's own code, such as which functions to hook for 60&nbsp;fps and widescreen, comes from the <a href="https://github.com/zeldaret/tww">zeldaret/tww</a> decompilation project.</p></div>
+        </details>
+        <details class="parchment">
+          <summary>Can I turn off 60 fps or widescreen?</summary>
+          <div class="a"><p>Yes. Pick 4:3 in the launcher to play exactly like the original. Each mod also has an environment switch, such as <code>MODERNGEKKO_FRAME60_ACCUM=0</code>. The players' guide in the download lists them all.</p></div>
+        </details>
+        <details class="parchment">
+          <summary>Setup says the translated code "differs from the tested build"</summary>
+          <div class="a"><p>Setup compares what it produced against the build this release was tested with, and refuses to run anything different. Check that the game files come from a clean copy of the USA disc, and that the download wasn't changed. The logs are kept in <code>assets\user-dir\modules\GZLE01\</code>.</p></div>
+        </details>
+        <details class="parchment">
+          <summary>Is this made by Nintendo?</summary>
+          <div class="a"><p>No. Deep Sea is an unofficial fan project. It isn't affiliated with, endorsed by or sponsored by Nintendo.</p></div>
+        </details>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <div>
+        <h3>Open source, all the way down</h3>
+        <p>Deep Sea is free software under the GNU GPL v3. Read it, build it yourself, change it and share your changes. Bug reports and pull requests are welcome on GitHub.</p>
+        <p class="links">
+          <a href="https://github.com/AH64-dll/DeepSea">Source code</a>
+          <a href="https://github.com/AH64-dll/DeepSea/releases/latest">Releases</a>
+          <a href="https://github.com/AH64-dll/DeepSea/issues">Report a problem</a>
+          <a href="https://github.com/AH64-dll/DeepSea/blob/master/LICENSE">License</a>
+        </p>
+      </div>
+      <div>
+        <h3>Built on</h3>
+        <ul class="credits">
+          <li><b><a href="https://github.com/zeldaret/tww">zeldaret/tww</a></b>, the Wind Waker decompilation project, whose work this port relies on</li>
+          <li><b>ModernGekko</b> (the runtime Deep Sea is built on), <b>DolRecomp</b> and <b>GXRuntime</b> by Hyperway (ExpansionPak) and contributors (GPLv3)</li>
+          <li><b>RecompCore</b> by SpecialK / aharonahdoot</li>
+          <li><b>Dolphin</b> by the Dolphin Emulator Project (GPLv2+)</li>
+          <li><b>aurora</b> by Luke Street (MIT)</li>
+          <li><b>llvm-mingw</b> by Martin Storsjö (LLVM license)</li>
+          <li><b>Python</b> by the Python Software Foundation (PSF license)</li>
+        </ul>
+      </div>
+    </div>
+    <p class="legal">The Legend of Zelda and The Wind Waker are trademarks of Nintendo. This project is not affiliated with or endorsed by Nintendo. No Nintendo code, artwork, audio or game data is distributed here or in the download. You need your own legally obtained copy of the game. The deckhand on this page is an original character.</p>
+  </div>
+</footer>
+
+<canvas id="deckhand" width="120" height="150" aria-hidden="true"></canvas>
+<button id="deckhand-hit" type="button" aria-label="The deckhand. Click to say hello; then use the arrow keys to run and jump."></button>
+<div class="bubble" id="bubble" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+  "use strict";
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ================= live fps readout ================= */
+  const fpsEl = document.getElementById("fps");
+  let fpsFrames = 0, fpsLast = performance.now();
+  function tickFps(now) {
+    fpsFrames++;
+    if (now - fpsLast >= 1000) {
+      fpsEl.textContent = Math.round(fpsFrames * 1000 / (now - fpsLast));
+      fpsFrames = 0; fpsLast = now;
+    }
+  }
+
+  /* ================= hero: the Great Sea ================= */
+  const hero = document.querySelector(".hero");
+  const sea = hero.querySelector("canvas.sea");
+  const sx = sea.getContext("2d");
+  let W = 0, H = 0, DPR = 1, HORIZON = 0, heroVisible = true;
+  const copy = hero.querySelector(".hero-copy");
+
+  function sizeSea() {
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    W = hero.clientWidth; H = hero.clientHeight;
+    sea.width = Math.round(W * DPR); sea.height = Math.round(H * DPR);
+    sx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    // the sea starts below the words, so they always sit on open sky
+    const copyBottom = copy.getBoundingClientRect().bottom - hero.getBoundingClientRect().top;
+    HORIZON = Math.max(H * 0.5, copyBottom + 36);
+  }
+
+  const clouds = [
+    { x: 0.08, y: 0.13, s: 1.00, v: 6 }, { x: 0.46, y: 0.07, s: 0.72, v: 9 },
+    { x: 0.70, y: 0.24, s: 0.90, v: 5 }, { x: 0.30, y: 0.33, s: 0.55, v: 11 },
+    { x: 0.92, y: 0.40, s: 0.62, v: 8 },
+  ];
+  const PUFFS = [[-58, 8, 26], [-26, -10, 34], [12, -20, 40], [50, -4, 30], [80, 10, 22], [0, 12, 30], [-40, 16, 22], [40, 16, 24]];
+
+  function drawCloud(cx, cy, s) {
+    sx.save(); sx.translate(cx, cy); sx.scale(s, s);
+    sx.fillStyle = "#CFE6FA";
+    for (const [dx, dy, r] of PUFFS) { sx.beginPath(); sx.arc(dx, dy + 7, r, 0, Math.PI * 2); sx.fill(); }
+    sx.fillStyle = "#FFFFFF";
+    for (const [dx, dy, r] of PUFFS) { sx.beginPath(); sx.arc(dx, dy, r, 0, Math.PI * 2); sx.fill(); }
+    // curled swirls, the toon-cloud signature
+    sx.strokeStyle = "#BCD9F3"; sx.lineWidth = 3.2; sx.lineCap = "round";
+    for (const [ox, oy, dir] of [[14, -14, 1], [-30, -2, -1]]) {
+      sx.beginPath();
+      for (let t = 0; t <= Math.PI * 2.6; t += 0.12) {
+        const r = 2 + t * 3.1, px = ox + dir * Math.cos(t) * r, py = oy + Math.sin(t) * r;
+        t === 0 ? sx.moveTo(px, py) : sx.lineTo(px, py);
+      }
+      sx.stroke();
+    }
+    sx.restore();
+  }
+
+  const BANDS = ["#4F9DEB", "#3A88E1", "#2A73D5", "#1D60C4", "#144DAE"];
+  function bandY(i, x, t) {
+    const n = BANDS.length, horizon = HORIZON, shore = H - 80;
+    const k = Math.pow((i + 1) / n, 1.45);
+    const base = horizon + (shore - horizon) * k - 6;
+    const amp = 2 + 11 * k, len = 70 + 320 * k;
+    return base + Math.sin(x / len * Math.PI * 2 + t * (0.9 + i * 0.12) + i * 1.7) * amp
+                + Math.sin(x / (len * 0.43) * Math.PI * 2 - t * 1.3 + i) * amp * 0.28;
+  }
+
+  function drawSea(t) {
+    const horizon = HORIZON;
+    // sun
+    const sunX = W * 0.83, sunY = H * 0.17;
+    const g = sx.createRadialGradient(sunX, sunY, 10, sunX, sunY, 150);
+    g.addColorStop(0, "rgba(255,248,210,0.95)"); g.addColorStop(0.35, "rgba(255,240,190,0.45)"); g.addColorStop(1, "rgba(255,240,190,0)");
+    sx.fillStyle = g; sx.beginPath(); sx.arc(sunX, sunY, 150, 0, Math.PI * 2); sx.fill();
+    sx.save(); sx.translate(sunX, sunY); sx.rotate(t * 0.05);
+    sx.fillStyle = "rgba(255,250,225,0.28)";
+    for (let i = 0; i < 12; i++) {
+      sx.rotate(Math.PI / 6); sx.beginPath(); sx.moveTo(0, -48); sx.lineTo(9, -118); sx.lineTo(-9, -118); sx.closePath(); sx.fill();
+    }
+    sx.restore();
+    sx.fillStyle = "#FFF6C8"; sx.beginPath(); sx.arc(sunX, sunY, 40, 0, Math.PI * 2); sx.fill();
+
+    // clouds
+    for (const c of clouds) {
+      const span = W + 360;
+      const x = ((c.x * span + t * c.v) % span) - 180;
+      drawCloud(x, c.y * H, c.s * Math.max(0.7, Math.min(1.25, W / 1200)));
+    }
+
+    // open water behind the swells
+    sx.fillStyle = "#5FAAF0"; sx.fillRect(0, horizon, W, H - horizon);
+    sx.fillStyle = "rgba(255,255,255,0.9)";
+    for (let i = 0; i < 9; i++) {               // glints under the sun
+      const gx = sunX + Math.sin(t * 0.7 + i * 2.1) * (30 + i * 9) - 20;
+      const gy = horizon + 5 + i * 5;
+      sx.fillRect(gx, gy, 14 + (i % 3) * 8, 2);
+    }
+    // swells, back to front, each with a broken foam crest
+    for (let i = 0; i < BANDS.length; i++) {
+      sx.beginPath(); sx.moveTo(0, H);
+      for (let x = 0; x <= W + 8; x += 8) sx.lineTo(x, bandY(i, x, t));
+      sx.lineTo(W, H); sx.closePath();
+      sx.fillStyle = BANDS[i]; sx.fill();
+      const k = (i + 1) / BANDS.length;
+      sx.beginPath();
+      for (let x = 0; x <= W + 8; x += 8) { const y = bandY(i, x, t) + 1; x === 0 ? sx.moveTo(x, y) : sx.lineTo(x, y); }
+      sx.setLineDash([24 + 70 * k, 40 + 130 * k]);
+      sx.lineDashOffset = -t * (18 + 30 * k) - i * 57;
+      sx.strokeStyle = "rgba(255,255,255,0.92)"; sx.lineWidth = 1.6 + 2.6 * k; sx.lineCap = "round";
+      sx.stroke(); sx.setLineDash([]);
+      if (i === 2) drawBoat(t);
+    }
+  }
+
+  function drawBoat(t) {
+    const L = Math.max(88, Math.min(170, W * 0.13));
+    const bx = W * (W < 700 ? 0.8 : 0.72);
+    const by = bandY(1, bx, t) + 4;
+    const slope = (bandY(1, bx + 20, t) - bandY(1, bx - 20, t)) / 40;
+    sx.save(); sx.translate(bx, by); sx.rotate(Math.atan(slope) * 0.8); sx.scale(L / 150, L / 150);
+    sx.lineJoin = "round"; sx.lineWidth = 4; sx.strokeStyle = "#1F2740";
+    // mast and sail
+    sx.fillStyle = "#6B3B1F"; sx.fillRect(-4, -150, 7, 150); sx.strokeRect(-4, -150, 7, 150);
+    sx.beginPath(); sx.moveTo(8, -142); sx.quadraticCurveTo(78 + Math.sin(t * 1.6) * 5, -90, 70, -26); sx.lineTo(8, -26); sx.closePath();
+    sx.fillStyle = "#FFF6DC"; sx.fill(); sx.stroke();
+    sx.save(); sx.clip();
+    sx.fillStyle = "#E4573D"; sx.fillRect(0, -96, 100, 18); sx.fillRect(0, -62, 100, 10);
+    sx.restore();
+    sx.beginPath(); sx.moveTo(8, -142); sx.quadraticCurveTo(78 + Math.sin(t * 1.6) * 5, -90, 70, -26); sx.lineTo(8, -26); sx.closePath(); sx.stroke();
+    // pennant
+    sx.beginPath(); sx.moveTo(0, -150); sx.lineTo(-30, -145 + Math.sin(t * 4) * 3); sx.lineTo(0, -138); sx.closePath();
+    sx.fillStyle = "#FFC83D"; sx.fill(); sx.stroke();
+    // hull
+    sx.beginPath(); sx.moveTo(-78, -22); sx.lineTo(80, -22); sx.quadraticCurveTo(64, 14, 30, 16); sx.lineTo(-44, 16); sx.quadraticCurveTo(-70, 10, -78, -22); sx.closePath();
+    sx.fillStyle = "#A45A2F"; sx.fill(); sx.stroke();
+    sx.fillStyle = "#7A3E1E"; sx.fillRect(-70, -8, 142, 7);
+    sx.restore();
+    // bow spray
+    sx.fillStyle = "rgba(255,255,255,0.9)";
+    for (let i = 0; i < 4; i++) {
+      const p = (t * 1.2 + i / 4) % 1;
+      sx.beginPath(); sx.arc(bx + L * 0.5 + p * 26, by - 4 - Math.sin(p * Math.PI) * 14, 3.5 * (1 - p) + 1, 0, Math.PI * 2); sx.fill();
+    }
+  }
+
+  // wind trails: a line that runs, then curls into a loop
+  const trails = [];
+  function spawnTrail() {
+    trails.push({ x: Math.random() * W * 0.6 - 60, y: H * (0.1 + Math.random() * 0.34), L: 160 + Math.random() * 160, r: 12 + Math.random() * 8, life: 0 });
+  }
+  function trailPoint(tr, u) {
+    const cut = 0.62;
+    if (u < cut) { const x = (u / cut) * tr.L * 0.7; return [x, Math.sin(u * 11) * 4]; }
+    const th = ((u - cut) / (1 - cut)) * Math.PI * 2.15;
+    return [tr.L * 0.7 + Math.sin(th) * tr.r + (th > Math.PI * 2 ? (th - Math.PI * 2) * 60 : 0), -tr.r * (1 - Math.cos(th))];
+  }
+  function drawTrails(dt) {
+    for (let i = trails.length - 1; i >= 0; i--) {
+      const tr = trails[i]; tr.life += dt / 3.6;
+      if (tr.life >= 1) { trails.splice(i, 1); continue; }
+      const u1 = Math.min(1, tr.life * 1.7), u0 = Math.max(0, tr.life * 1.7 - 0.7);
+      const ox = tr.x + tr.life * 170;
+      sx.beginPath();
+      for (let u = u0; u <= u1; u += 0.01) { const [px, py] = trailPoint(tr, u); u === u0 ? sx.moveTo(ox + px, tr.y + py) : sx.lineTo(ox + px, tr.y + py); }
+      sx.strokeStyle = `rgba(255,255,255,${0.9 * Math.sin(tr.life * Math.PI)})`;
+      sx.lineWidth = 3; sx.lineCap = "round"; sx.lineJoin = "round"; sx.stroke();
+    }
+  }
+
+  const gulls = [0, 1, 2].map(i => ({ x: Math.random(), y: 0.2 + i * 0.07, v: 26 + i * 9, ph: i * 1.3, s: 1 - i * 0.18 }));
+  function drawGulls(t) {
+    sx.strokeStyle = "#1F2740"; sx.lineWidth = 2.4; sx.lineCap = "round"; sx.lineJoin = "round";
+    for (const g of gulls) {
+      const span = W + 200, x = ((g.x * span + t * g.v) % span) - 100, y = g.y * H + Math.sin(t * 0.8 + g.ph) * 10;
+      const f = Math.sin(t * 6 + g.ph) * 7 * g.s, w = 14 * g.s;
+      sx.beginPath(); sx.moveTo(x - w, y - f); sx.quadraticCurveTo(x - w * 0.45, y - 8 * g.s - f * 0.3, x, y); sx.quadraticCurveTo(x + w * 0.45, y - 8 * g.s - f * 0.3, x + w, y - f); sx.stroke();
+    }
+  }
+
+  let seaT = 0, trailClock = 1.2;
+  function renderSea(dt) {
+    seaT += dt;
+    sx.clearRect(0, 0, W, H);
+    drawSea(seaT);
+    trailClock -= dt; if (trailClock <= 0) { spawnTrail(); trailClock = 2.6 + Math.random() * 2.4; }
+    drawTrails(dt);
+    drawGulls(seaT);
+  }
+
+  /* ================= the deckhand ================= */
+  const PAL = {
+    k: "#1D1A33", r: "#E0453A", R: "#A92B2E", h: "#5A3218", s: "#F8C89C", S: "#DDA072",
+    c: "#F2907A", w: "#F4F8FF", b: "#2D6CDF", p: "#34457A", f: "#7A4A2A", W: "#FFFFFF",
+  };
+  const HEAD = [
+    "......kkkkk.....",
+    "....kkrrrrrkk...",
+    "...krrrrrrrrrk..",
+    "..kRRRRRRRRRRRk.",
+    ".rkhhhhhhhhhhhk.",
+    "rRkhhhhhhhshhsk.",
+    "..khhhhsskssksk.",
+    "..khhhSsskssksk.",
+    "..khhhssssccssk.",
+    "...khhssssssssk.",
+    "....kkksssssskk.",
+  ];
+  const BLINK6 = "..khhhhsssssssk.";
+  const BODY = [
+    "....kbbwwbbk....",
+    "...kbbbbbbbbk...",
+    "..kswwwwwwwwsk..",
+    "..ksbbbbbbbbsk..",
+    "...kwwwwwwwwk...",
+    "...kppppppppk...",
+  ];
+  const BODY_UP = [
+    "....kbbwwbbk....",
+    "..skbbbbbbbbks..",
+    "...kwwwwwwwwk...",
+    "...kbbbbbbbbk...",
+    "...kwwwwwwwwk...",
+    "...kppppppppk...",
+  ];
+  const LEGS = {
+    idle: ["...kpppkkpppk...", "....kssk.kssk...", "....kfffkkfffk.."],
+    runA: ["..kpppk..kpppk..", ".kssk......kssk.", "kfffk......kfffk"],
+    runB: ["....kppppppk....", ".....kssssk.....", "....kfffffk....."],
+    jump: ["...kpppkkpppk...", "..kssk....kssk..", ".kffk......kffk."],
+  };
+  function frame(head6, body, legs) { const h = HEAD.slice(); if (head6) h[6] = head6; return h.concat(body, legs); }
+  const FRAMES = {
+    idle: frame(null, BODY, LEGS.idle),
+    blink: frame(BLINK6, BODY, LEGS.idle),
+    runA: frame(null, BODY, LEGS.runA),
+    runB: frame(null, BODY, LEGS.runB),
+    jump: frame(null, BODY_UP, LEGS.jump),
+  };
+  const PX = 3, SPR_W = 16 * PX, SPR_H = 20 * PX;
+  const CAN_W = 120, CAN_H = 150;
+
+  const kidCanvas = document.getElementById("deckhand");
+  const kx = kidCanvas.getContext("2d");
+  const hit = document.getElementById("deckhand-hit");
+  const bubble = document.getElementById("bubble");
+  let KDPR = 1;
+  function sizeKid() {
+    KDPR = Math.min(2, window.devicePixelRatio || 1);
+    kidCanvas.width = CAN_W * KDPR; kidCanvas.height = CAN_H * KDPR;
+    kidCanvas.style.width = CAN_W + "px"; kidCanvas.style.height = CAN_H + "px";
+    kx.setTransform(KDPR, 0, 0, KDPR, 0, 0); kx.imageSmoothingEnabled = false;
+  }
+
+  let platforms = [];
+  function measure() {
+    const sy = window.scrollY;
+    platforms = [...document.querySelectorAll("[data-ground]")].map(el => {
+      const r = el.getBoundingClientRect();
+      const off = +(el.dataset.groundOffset || 0), inset = +(el.dataset.groundInset || 6);
+      return { top: r.top + sy + off, x1: r.left + inset + 12, x2: r.right - inset - 12 };
+    }).filter(p => p.x2 - p.x1 > 40);
+  }
+
+  const kid = { x: 140, y: 0, vx: 0, vy: 0, on: null, face: 1, state: "idle", target: null, idle: 1.5, jumpTo: null, chute: false, blink: 2, anim: 0, offscreen: 0, spin: 0 };
+  const dust = [];
+  const GRAV = 1900, RUN = 175, JUMP = 640;
+  let pointer = null, control = false, keys = { l: false, r: false };
+
+  function place() {
+    measure();
+    const beach = platforms[0];
+    kid.on = beach; kid.x = Math.min(beach.x2 - 20, Math.max(beach.x1 + 20, window.innerWidth * 0.12 + 40)); kid.y = beach.top;
+  }
+
+  function viewTop() { return window.scrollY + 70; }
+  function viewBottom() { return window.scrollY + window.innerHeight; }
+  function visible(p) { return p.top > viewTop() + 40 && p.top < viewBottom() - 30; }
+
+  function jump(vx) {
+    if (!kid.on) return;
+    kid.on = null; kid.vy = -JUMP; kid.vx = vx; puff(6);
+  }
+  function puff(n) {
+    for (let i = 0; i < n; i++) dust.push({ x: (Math.random() - 0.5) * 30, y: 0, vx: (Math.random() - 0.5) * 60, vy: -20 - Math.random() * 40, life: 0.45 + Math.random() * 0.2 });
+  }
+  function neighbour(p, dir) {
+    let best = null, bestGap = Infinity;
+    for (const q of platforms) {
+      if (q === p || !visible(q)) continue;
+      const dy = q.top - p.top;
+      if (dy < -95 || dy > 320) continue;
+      const gap = dir > 0 ? q.x1 - p.x2 : p.x1 - q.x2;
+      if (gap < -4 || gap > 130) continue;
+      if (gap < bestGap) { bestGap = gap; best = q; }
+    }
+    return best;
+  }
+  function respawn() {
+    const vis = platforms.filter(visible);
+    if (!vis.length) return;
+    const mid = window.scrollY + window.innerHeight * 0.55;
+    vis.sort((a, b) => Math.abs(a.top - mid) - Math.abs(b.top - mid));
+    const p = vis[Math.floor(Math.random() * Math.min(2, vis.length))];
+    kid.x = p.x1 + 20 + Math.random() * Math.max(10, p.x2 - p.x1 - 40);
+    kid.y = viewTop() + 20; kid.vy = 0; kid.vx = 0; kid.on = null; kid.chute = true; kid.jumpTo = null; kid.target = null;
+  }
+
+  const LINES = [
+    "Ahoy! Bring your own disc and we'll set sail.",
+    "Sixty frames a second. The gulls can't keep up!",
+    "The first voyage takes a while. After that, straight to sea.",
+    "Hold Z + Start to skip a cutscene.",
+    "No game files aboard. Just the ship.",
+    "Widescreen means more ocean.",
+    "Arrow keys to run, Up to jump. Esc to let go.",
+  ];
+  let lineIx = 0, bubbleT = 0;
+  function say(text, secs = 3.2) { bubble.textContent = text; bubble.classList.add("on"); bubbleT = secs; }
+
+  function think(dt) {
+    const p = kid.on;
+    if (!p) return;
+    if (control) {
+      const dir = (keys.r ? 1 : 0) - (keys.l ? 1 : 0);
+      kid.vx = dir * RUN * 1.15; if (dir) kid.face = dir;
+      return;
+    }
+    if (reduceMotion) { kid.vx = 0; return; }
+    let target = kid.target;
+    if (pointer && pointer.y > p.top - 240 && pointer.y < p.top + 40 && pointer.x > p.x1 - 60 && pointer.x < p.x2 + 60) {
+      const side = pointer.x > kid.x ? -34 : 34;
+      target = Math.max(p.x1, Math.min(p.x2, pointer.x + side));
+      kid.jumpTo = null;
+    } else if (target == null) {
+      kid.idle -= dt;
+      if (kid.idle <= 0) {
+        const dir = Math.random() < 0.5 ? -1 : 1;
+        const q = Math.random() < 0.55 ? neighbour(p, dir) : null;
+        if (q) { kid.jumpTo = { q, dir }; target = dir > 0 ? p.x2 : p.x1; }
+        else target = p.x1 + Math.random() * (p.x2 - p.x1);
+        kid.target = target;
+      }
+    }
+    if (target == null) { kid.vx = 0; return; }
+    const d = target - kid.x;
+    if (Math.abs(d) < 4) {
+      kid.vx = 0; kid.target = null; kid.idle = 1.2 + Math.random() * 2.8;
+      if (kid.jumpTo) {
+        const { q, dir } = kid.jumpTo; kid.jumpTo = null;
+        const gap = dir > 0 ? q.x1 - p.x2 : p.x1 - q.x2;
+        kid.face = dir; jump(dir * Math.max(120, gap * 1.6 + 70));
+      }
+      return;
+    }
+    kid.face = Math.sign(d); kid.vx = Math.sign(d) * RUN;
+  }
+
+  function physics(dt) {
+    if (kid.on) {
+      kid.x += kid.vx * dt;
+      kid.y = kid.on.top;
+      if (kid.x < kid.on.x1 - 6 || kid.x > kid.on.x2 + 6) {       // walked off the edge
+        if (control || kid.jumpTo) { kid.x = Math.max(kid.on.x1, Math.min(kid.on.x2, kid.x)); }
+        else { kid.on = null; kid.vy = 0; }
+      }
+      return;
+    }
+    const prev = kid.y;
+    if (kid.chute) { kid.vy = Math.min(kid.vy + 300 * dt, 95); kid.x += Math.sin(performance.now() / 400) * 12 * dt; }
+    else kid.vy += GRAV * dt;
+    kid.x += kid.vx * dt; kid.y += kid.vy * dt;
+    if (kid.vy > 0) {
+      for (const p of platforms) {
+        if (kid.x >= p.x1 - 4 && kid.x <= p.x2 + 4 && prev <= p.top && kid.y >= p.top) {
+          kid.on = p; kid.y = p.top; kid.vy = 0; kid.vx = 0; kid.chute = false; kid.target = null; kid.idle = 0.8 + Math.random() * 1.5;
+          puff(5); break;
+        }
+      }
+    }
+    if (!kid.on && kid.y > viewBottom() + 300) respawn();
+  }
+
+  function drawKid(dt) {
+    kx.clearRect(0, 0, CAN_W, CAN_H);
+    const ox = (CAN_W - SPR_W) / 2, oy = CAN_H - SPR_H;
+    // shadow
+    if (kid.on) { kx.fillStyle = "rgba(20,30,60,0.22)"; kx.beginPath(); kx.ellipse(CAN_W / 2, CAN_H - 2, 18, 4, 0, 0, Math.PI * 2); kx.fill(); }
+    // dust
+    for (let i = dust.length - 1; i >= 0; i--) {
+      const d = dust[i]; d.life -= dt; if (d.life <= 0) { dust.splice(i, 1); continue; }
+      d.x += d.vx * dt; d.y += d.vy * dt; d.vy += 90 * dt;
+      kx.fillStyle = `rgba(255,255,255,${Math.min(1, d.life * 2)})`;
+      kx.fillRect(Math.round(CAN_W / 2 + d.x), Math.round(CAN_H - 4 + d.y), 4, 4);
+    }
+    // parachute of sail-cloth
+    if (kid.chute) {
+      const cx = CAN_W / 2, top = oy - 58;
+      kx.strokeStyle = "#1D1A33"; kx.lineWidth = 1.5;
+      kx.beginPath(); kx.moveTo(cx - 34, top + 26); kx.lineTo(cx - 12, oy + 30); kx.moveTo(cx + 34, top + 26); kx.lineTo(cx + 12, oy + 30); kx.stroke();
+      kx.beginPath(); kx.moveTo(cx - 40, top + 28); kx.quadraticCurveTo(cx, top - 26, cx + 40, top + 28); kx.closePath();
+      kx.fillStyle = "#FFF6DC"; kx.fill(); kx.lineWidth = 3; kx.stroke();
+      kx.save(); kx.clip(); kx.fillStyle = "#E4573D"; kx.fillRect(cx - 12, top - 10, 24, 40); kx.restore();
+    }
+    // pick frame
+    let f = "idle", bob = 0;
+    if (!kid.on) f = kid.chute ? "idle" : "jump";
+    else if (Math.abs(kid.vx) > 1) {
+      kid.anim += dt * Math.abs(kid.vx) / 26;
+      const ph = Math.floor(kid.anim) % 4; f = ph % 2 === 0 ? "runA" : "runB"; bob = ph % 2 ? -PX : 0;
+    } else {
+      kid.blink -= dt;
+      if (kid.blink < 0.12) f = "blink";
+      if (kid.blink <= 0) kid.blink = 2 + Math.random() * 3;
+    }
+    const rows = FRAMES[f];
+    kx.save();
+    kx.translate(CAN_W / 2, 0);
+    if (kid.spin > 0) { kid.spin -= dt; kx.scale(Math.cos(kid.spin * 14), 1); }
+    else kx.scale(kid.face, 1);
+    kx.translate(-SPR_W / 2, oy + bob);
+    for (let y = 0; y < rows.length; y++) {
+      const row = rows[y];
+      for (let x = 0; x < 16; x++) {
+        const c = row[x]; if (c === ".") continue;
+        kx.fillStyle = PAL[c]; kx.fillRect(x * PX, y * PX, PX, PX);
+      }
+    }
+    kx.restore();
+  }
+
+  function position() {
+    const left = Math.round(kid.x - CAN_W / 2), top = Math.round(kid.y - CAN_H);
+    kidCanvas.style.transform = `translate(${left}px, ${top}px)`;
+    hit.style.transform = `translate(${Math.round(kid.x - SPR_W / 2)}px, ${Math.round(kid.y - SPR_H)}px)`;
+    const half = bubble.offsetWidth / 2, minX = window.scrollX + half + 10, maxX = window.scrollX + document.documentElement.clientWidth - half - 10;
+    const bx = Math.max(minX, Math.min(maxX, kid.x));
+    bubble.style.left = Math.round(bx) + "px";
+    bubble.style.setProperty("--tail", Math.max(-half + 16, Math.min(half - 16, kid.x - bx)) + "px");
+    bubble.style.top = Math.round(kid.y - SPR_H - (kid.chute ? 110 : 64)) + "px";
+  }
+
+  /* input */
+  window.addEventListener("pointermove", e => { if (e.pointerType === "mouse") pointer = { x: e.clientX + window.scrollX, y: e.clientY + window.scrollY }; }, { passive: true });
+  document.addEventListener("pointerleave", () => { pointer = null; });
+  hit.addEventListener("click", () => {
+    control = true; kid.spin = 0.45; if (kid.on) jump(0);
+    say(LINES[lineIx++ % LINES.length]);
+  });
+  hit.addEventListener("focus", () => { control = true; });
+  hit.addEventListener("blur", () => { control = false; keys.l = keys.r = false; });
+  window.addEventListener("keydown", e => {
+    if (!control) return;
+    if (e.key === "ArrowLeft") { keys.l = true; e.preventDefault(); }
+    else if (e.key === "ArrowRight") { keys.r = true; e.preventDefault(); }
+    else if (e.key === "ArrowUp" || e.key === " ") {
+      e.preventDefault();
+      if (kid.on) { const dir = (keys.r ? 1 : 0) - (keys.l ? 1 : 0); jump(dir * RUN * 1.15); }
+    } else if (e.key === "Escape") { control = false; hit.blur(); say("Aye, I'll keep watch.", 2); }
+  });
+  window.addEventListener("keyup", e => {
+    if (e.key === "ArrowLeft") keys.l = false;
+    if (e.key === "ArrowRight") keys.r = false;
+  });
+  document.addEventListener("pointerdown", e => { if (e.target !== hit) { control = false; } });
+
+  /* ================= main loop ================= */
+  let last = performance.now(), measureClock = 0;
+  function loop(now) {
+    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    tickFps(now);
+    if (heroVisible && !reduceMotion) renderSea(dt);
+    measureClock -= dt;
+    if (measureClock <= 0) {
+      const prevOn = kid.on; measure(); measureClock = 0.5;
+      if (prevOn) {   // keep standing on the same element after layout shifts
+        const same = platforms.reduce((b, p) => (!b || Math.abs(p.top - prevOn.top) + Math.abs(p.x1 - prevOn.x1) < Math.abs(b.top - prevOn.top) + Math.abs(b.x1 - prevOn.x1)) ? p : b, null);
+        kid.on = same;
+      }
+    }
+    think(dt);
+    physics(dt);
+    const onScreen = kid.y > window.scrollY + 40 && kid.y - SPR_H < viewBottom();
+    kid.offscreen = onScreen ? 0 : kid.offscreen + dt;
+    if (kid.offscreen > 0.9 && !control) { kid.offscreen = 0; respawn(); }
+    if (bubbleT > 0) { bubbleT -= dt; if (bubbleT <= 0) bubble.classList.remove("on"); }
+    drawKid(dt);
+    position();
+    requestAnimationFrame(loop);
+  }
+
+  function init() {
+    sizeSea(); sizeKid(); place();
+    if (reduceMotion) renderSea(0.016);
+    new IntersectionObserver(es => { heroVisible = es[0].isIntersecting; }).observe(hero);
+    window.addEventListener("resize", () => { sizeSea(); measure(); if (reduceMotion) renderSea(0.016); });
+    setTimeout(() => say(LINES[lineIx++], 3.6), 1400);
+    requestAnimationFrame(loop);
+  }
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(init); else window.addEventListener("load", init);
+})();
+</script>
+</body>
+</html>
