@@ -1,0 +1,83 @@
+--- a/generated.h
++++ b/generated.h
+@@ -577,16 +577,50 @@
+     return false;
+ }
+ 
++/* A1 batch-dispatch channel: the chassis installs g_mg_native_ok through the
++ * ppc_set_native_check export. The query answers EXACTLY the predicate the
++ * chassis evaluates at every block boundary before re-entering the module:
++ *   module_active && fast_dispatchable_at(pc) && !IsHostCallAddress(pc)
++ * (verified, non-demoted, non-forced-fallback chunk AND no mod hook/patch/
++ * pending-return at pc — HandlesAddress covers all three).
++ *
++ * When armed, dolrecomp_call consults it INSTEAD of the ppc_host_call probe:
++ *  - query true  -> the block is plain native code; find_original runs it.
++ *    ppc_host_call is provably a no-op here (Dispatch's hooks/patches/
++ *    pending-returns are all inside the query's IsHostCallAddress term), so
++ *    skipping it is bit-exact.
++ *  - query false -> return 0 with ctx->pc set. The chassis then does
++ *    precisely what it would have done had the previous block boundary
++ *    stopped there: entry-hook addresses run through host_call + the demoted
++ *    chunk falls back to the JIT, patched addresses run the patch, pending
++ *    return hooks fire, uncovered/uncached addresses hit the interpreter.
++ * The replacement dispatcher keeps its first-place ordering, so an address
++ * that is both replaced and hooked behaves as before (replacement wins).
++ *
++ * When NOT armed (older chassis / no query installed) the original
++ * ppc_host_call path runs unchanged. */
++#define DOLRECOMP_A1_BATCH 1
++extern int (*g_mg_native_ok)(u32 address, void* user);
++extern void* g_mg_native_ok_user;
++
+ static inline int dolrecomp_call(CPUState* ctx, u32 address) {
+     u32 alias;
+     ctx->pc = address;
+     if (dolrecomp_dispatch_replacement(ctx, address)) return 1;
+-    if (ctx->host_call && ppc_host_call(ctx, address)) return 1;
++    if (g_mg_native_ok) {
++        if (!g_mg_native_ok(address, g_mg_native_ok_user)) return 0;
++    } else if (ctx->host_call && ppc_host_call(ctx, address)) {
++        return 1;
++    }
+     if (dolrecomp_call_original(ctx, address)) return 1;
+     if (dolrecomp_physical_pc_alias(ctx, address, &alias)) {
+         ctx->pc = alias;
+         if (dolrecomp_dispatch_replacement(ctx, alias)) return 1;
+-        if (ctx->host_call && ppc_host_call(ctx, alias)) return 1;
++        if (g_mg_native_ok) {
++            if (!g_mg_native_ok(alias, g_mg_native_ok_user)) return 0;
++        } else if (ctx->host_call && ppc_host_call(ctx, alias)) {
++            return 1;
++        }
+         if (dolrecomp_call_original(ctx, alias)) return 1;
+     }
+     return 0;
+@@ -602,6 +636,27 @@
+     return 1;
+ }
+ 
++/* A1: cycle-budgeted batch. Identical per-block semantics to
++ * dolrecomp_run_blocks (every block still goes through the full
++ * dolrecomp_call chain), but the loop ends on the guest-cycle charge instead
++ * of a fixed block count: the chassis regains control once the accumulated
++ * charge crosses the same budget an in-chunk loop back-edge already uses,
++ * so CoreTiming/interrupt latency keeps its existing worst case. A block
++ * that cannot be handled natively (hooked/demoted/uncovered pc) returns 0
++ * with ctx->pc set, exactly like the single-block path. */
++static inline DOLRECOMP_UNUSED int dolrecomp_run_budget(CPUState* ctx, s64 budget) {
++    /* Iteration cap (review §3.2): a verified chunk entered at a non-entry
++     * pc (wild computed jump to mid-chunk data) returns with zero charge —
++     * without this bound the loop livelocks unresponsively, where the old
++     * per-block path still re-checked CPU::State each dispatch. */
++    for (int i = 0; i < 4096; ++i) {
++        if (!dolrecomp_call(ctx, ctx->pc)) return 0;
++        if (ctx->exception) return 0;
++        if (ctx->downcount <= -budget) return 1;
++    }
++    return 1; /* hand control back to the chassis; it decides what to do */
++}
++
+ #undef DOLRECOMP_UNUSED
+ 
+ #endif /* RECOMP_GENERATED_H */

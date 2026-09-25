@@ -1,0 +1,13 @@
+/build*/
+/database/.setup_done.flag
+/database/titles.txt
+/extern/wit/
+/build.lock
+/nul
+/loop-notes/
+/bench/pgo/
+/Binary/
+
+# Python bytecode (mod audit tools)
+__pycache__/
+*.pyc

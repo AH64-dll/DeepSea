@@ -1,0 +1,122 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-mingw-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-windows/build-${presetName}",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/llvm-mingw-x86_64.cmake",
+      "cacheVariables": {
+        "BUILD_TESTING": "OFF",
+        "MODERNGEKKO_ENABLE_DYNAMIC_MODULES": "ON",
+        "MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME": "ON",
+        "USE_SYSTEM_SDL3": "OFF"
+      }
+    },
+    {
+      "name": "windows-mingw-release",
+      "inherits": "windows-mingw-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "windows-mingw-release-opt",
+      "inherits": "windows-mingw-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ENABLE_LTO": "ON"
+      }
+    },
+    {
+      "name": "windows-mingw-debug",
+      "inherits": "windows-mingw-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "windows-mingw-tests",
+      "inherits": "windows-mingw-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "windows-msvc-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-windows/build-${presetName}",
+      "cacheVariables": {
+        "BUILD_TESTING": "OFF",
+        "MODERNGEKKO_ENABLE_DYNAMIC_MODULES": "ON",
+        "MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME": "ON",
+        "USE_SYSTEM_SDL3": "OFF"
+      }
+    },
+    {
+      "name": "windows-msvc-release",
+      "inherits": "windows-msvc-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "windows-msvc-tests",
+      "inherits": "windows-msvc-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-mingw-release",
+      "configurePreset": "windows-mingw-release"
+    },
+    {
+      "name": "windows-mingw-debug",
+      "configurePreset": "windows-mingw-debug"
+    },
+    {
+      "name": "windows-mingw-release-opt",
+      "configurePreset": "windows-mingw-release-opt"
+    },
+    {
+      "name": "windows-mingw-tests",
+      "configurePreset": "windows-mingw-tests"
+    },
+    {
+      "name": "windows-msvc-release",
+      "configurePreset": "windows-msvc-release"
+    },
+    {
+      "name": "windows-msvc-tests",
+      "configurePreset": "windows-msvc-tests"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-mingw-tests",
+      "configurePreset": "windows-mingw-tests",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-msvc-tests",
+      "configurePreset": "windows-msvc-tests",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
