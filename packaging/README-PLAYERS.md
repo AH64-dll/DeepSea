@@ -35,7 +35,7 @@ own disc the first time you press Play. It checks that the disc files are
 the USA release, translates the game's code, and compiles it with the
 bundled compiler. Nothing is downloaded.
 
-- It takes roughly 30-90 minutes, depending on your CPU. A progress bar
+- It takes roughly 1 to 3 hours, depending on your CPU. A progress bar
   shows in `DeepSea.exe`; `Play Deep Sea.cmd` shows it in the
   console. Cancel is safe, and the next Play starts over.
 - It needs about 2 GB free while it runs. Afterwards it keeps about
