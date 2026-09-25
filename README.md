@@ -111,15 +111,5 @@ AH64-dll - Deep Sea, the Wind Waker port in this fork (60 fps, widescreen, disc 
 [zeldaret/tww](https://github.com/zeldaret/tww) - The Wind Waker decompilation. Deep Sea's
 hooks, fixes and native helpers rely on its work on the game's code.
 
-Please contact me if your name is missing and you contributed something!
 
-## Hall of Fame
-binsento - Super Mario Sunshine & Super Smash Bros. Brawl recomp
 
-MOOMAN - 007 AUF
-
-me (Hyperway) Luigi's Mansion & Kirby Wii
-
-Literally God / MrPoloGit - Super Smash Bros. Melee
-
-Contact me to be added to the Hall of Fame
