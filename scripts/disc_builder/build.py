@@ -249,21 +249,26 @@ class Builder:
         #    one-function-per-4096-instructions files it was two thirds of all
         #    compile time for no measurable speed.
         #  - every other actor file (enemies, bosses and props of places the
-        #    profile never visited, two thirds of the code): -O0. Frame cost is
-        #    the engine's: with every actor file at -O0 (the ship included)
-        #    sailing measured the same emulation time per field as the all -O2
-        #    + ThinLTO module, while the engine at -O0 was four times slower.
+        #    profiled play never visited, two thirds of the code): -O1 when it
+        #    is small, -O0 when it is one of the ~330 large ones. -O1 cost
+        #    grows much faster than linearly with a file's giant functions:
+        #    +0.4 s on a 400 KB file, +6 s on a 1.3 MB one, where -O0 takes
+        #    one to two seconds. Frame cost is the engine's: with every actor
+        #    file at -O0 (the ship included) sailing measured the same
+        #    emulation time per field as the all -O2 + ThinLTO module, while
+        #    the engine at -O0 was four times slower.
         # No ThinLTO: its link step re-optimized the whole game for most of an
         # hour; generated code calls across files through the dispatcher, so
         # cross-file inlining bought nothing measurable.
         full = ["-O2", "-mllvm", "-enable-gvn-memdep=false"]
-        light = ["-O0"]
+        small = ["-O1"]
+        large = ["-O0"]
         hot = set(json.loads((HERE / "hot-sources.json").read_text())["optimize"])
         rels = self.work / "rel/generated/rels"
 
         def tier(source):
             if rels in source.parents and source.relative_to(self.work).as_posix() not in hot:
-                return light
+                return small if source.stat().st_size < 512 * 1024 else large
             return full
 
         def compile_one(index, source):
@@ -394,8 +399,10 @@ class Builder:
 
 
 def default_jobs():
-    """Every logical CPU, but at most one compiler per 0.5 GB of free memory
-    (the largest translated files peak near 450 MB in clang)."""
+    """Every logical CPU, at most one compiler per 1.5 GB of installed memory
+    (the largest translated files peak near 450 MB in clang; most need far
+    less). Installed rather than free memory: free memory swings with
+    whatever else is open, and halving the jobs doubles the wait."""
     jobs = os.cpu_count() or 2
     if os.name == "nt":
         import ctypes
@@ -408,7 +415,7 @@ def default_jobs():
                         ("available_extended", ctypes.c_uint64)]
         status = MemoryStatus(length=ctypes.sizeof(MemoryStatus))
         if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-            jobs = min(jobs, int(status.available / (0.5 * 2**30)))
+            jobs = min(jobs, max(2, int(status.total / (1.5 * 2**30))))
     return max(1, min(jobs, 64))
 
 
