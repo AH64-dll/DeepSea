@@ -2,6 +2,7 @@
 #include "dol_patch.hpp"
 #include "launcher_savestates.hpp"
 #include "launcher_module_setup.hpp"
+#include "deepsea_emblem.hpp"
 #include "moderngekko/game.hpp"
 #include "netplay_session.hpp"
 
@@ -25,6 +26,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -45,6 +47,30 @@ namespace fs = std::filesystem;
 
 namespace
 {
+// The Deep Sea pixel emblem (packaging/branding), drawn as rectangles so the
+// launcher needs no image loader. `pixel` is the size of one emblem pixel.
+void DrawEmblem(float pixel)
+{
+  const ImVec2 origin = ImGui::GetCursorScreenPos();
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  for (int y = 0; y < deepsea_emblem::SIZE; ++y)
+  {
+    for (int x = 0; x < deepsea_emblem::SIZE; ++x)
+    {
+      for (const auto& colour : deepsea_emblem::PALETTE)
+      {
+        if (colour.key != deepsea_emblem::GRID[y][x])
+          continue;
+        const ImVec2 a(origin.x + x * pixel, origin.y + y * pixel);
+        draw->AddRectFilled(a, ImVec2(a.x + pixel, a.y + pixel),
+                            IM_COL32((colour.rgb >> 16) & 0xFF, (colour.rgb >> 8) & 0xFF,
+                                     colour.rgb & 0xFF, 0xFF));
+      }
+    }
+  }
+  ImGui::Dummy(ImVec2(pixel * deepsea_emblem::SIZE, pixel * deepsea_emblem::SIZE));
+}
+
 #ifndef MODERNGEKKO_FRONTEND_NAME
 #define MODERNGEKKO_FRONTEND_NAME "ModernGekko"
 #endif
@@ -1173,7 +1199,18 @@ int main(int argc, char** argv)
     ImGui::Begin(MODERNGEKKO_FRONTEND_NAME " Launcher", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_NoSavedSettings);
-    ImGui::TextUnformatted(MODERNGEKKO_FRONTEND_NAME);
+    {
+      const float emblem_pixel = std::round(3.0f * scale);
+      DrawEmblem(emblem_pixel);
+      ImGui::SameLine();
+      const float emblem_height = emblem_pixel * deepsea_emblem::SIZE;
+      ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
+                           (emblem_height - ImGui::GetTextLineHeight() * 2.0f) * 0.5f);
+      ImGui::BeginGroup();
+      ImGui::TextUnformatted(MODERNGEKKO_FRONTEND_NAME);
+      ImGui::TextDisabled("The Wind Waker at 60 fps");
+      ImGui::EndGroup();
+    }
     ImGui::Separator();
     ImGui::BeginDisabled(module_setup.Running());
 

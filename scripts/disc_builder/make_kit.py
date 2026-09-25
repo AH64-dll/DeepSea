@@ -65,7 +65,7 @@ def main():
     # builder sources (no tests, no kit tooling)
     for path in sorted(HERE.rglob("*")):
         rel = path.relative_to(HERE)
-        if path.is_dir() or rel.parts[0] in ("tests", "__pycache__") or path.name == "make_kit.py":
+        if path.is_dir() or rel.parts[0] in ("tests", "__pycache__") or path.name in ("make_kit.py", "make_hot_list.py"):
             continue
         (out / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, out / rel)

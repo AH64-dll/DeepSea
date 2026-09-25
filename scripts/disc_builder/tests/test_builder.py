@@ -203,6 +203,18 @@ class ManifestTests(unittest.TestCase):
                              ["dol/chunks/extra.c", "rel/m_1/chunks/r.c"])
 
 
+class TierTests(unittest.TestCase):
+    def test_every_optimized_actor_file_is_a_translated_file(self):
+        # A stale hot list would silently compile the busiest actors at -O0.
+        here = Path(__file__).resolve().parents[1]
+        hot = json.loads((here / "hot-sources.json").read_text())["optimize"]
+        expected = json.loads((here / "expected-sources.json").read_text())["files"]
+        self.assertTrue(hot)
+        for path in hot:
+            self.assertTrue(path.startswith("rel/generated/rels/"), path)
+            self.assertIn("rel/" + path[len("rel/generated/rels/"):], expected)
+
+
 class PatchTests(unittest.TestCase):
     def test_strict_apply_and_mismatch(self):
         from patching import apply_unified_patch

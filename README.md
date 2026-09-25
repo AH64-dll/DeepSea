@@ -20,7 +20,7 @@ a runtime for GameCube/Wii recompilations.
    extracted USA disc. The launcher can also unpack an ISO, WBFS or RVZ of
    your copy.
 3. The first launch builds the game module from your disc. This takes
-   roughly 1 to 3 hours, depending on your CPU, and shows a progress bar. Later
+   about 10 minutes, depending on your CPU, and shows a progress bar. Later
    launches start right away.
 
 Requirements: Windows 10/11 x64, a Vulkan 1.1 GPU, and about 2 GB of free

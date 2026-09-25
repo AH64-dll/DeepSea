@@ -225,12 +225,11 @@ class Builder:
         sources += [HERE / "module/module_glue.c", HERE / "module/rel_loader.c"]
         objects = self.work / "objects"
         objects.mkdir()
-        # The tested module's optimization recipe (build-module-pgo-lto):
-        # -O2 + ThinLTO + PGO. -march=native instead of its fixed
-        # x86-64-v3/-mmovbe: the DLL never leaves this PC, and a fixed AVX2
-        # baseline would fault on older CPUs. -ffp-contract=off keeps float
-        # results bit-exact with the guest across -march choices.
-        flags = ["-O2", "-march=native", "-flto=thin", "-DNDEBUG", "-DWIN32_LEAN_AND_MEAN",
+        # -march=native instead of a fixed x86-64-v3 baseline: the DLL never
+        # leaves this PC, and a fixed AVX2 baseline would fault on older CPUs.
+        # -ffp-contract=off keeps float results bit-exact with the guest
+        # across -march choices.
+        flags = ["-march=native", "-DNDEBUG", "-DWIN32_LEAN_AND_MEAN",
                  "-DNOMINMAX", '-DDOLRECOMP_CPU_HEADER="core/cpu.h"',
                  "-DDOLRECOMP_ENABLE_REPLACEMENTS", "-DMODERNGEKKO_INLINE_XLAT_FULL=1",
                  "-ffp-contract=off", "-fno-fast-math",
@@ -244,14 +243,48 @@ class Builder:
         for directory in (self.resources / "include", runtime / "include",
                           self.work / "dol/generated", self.work / "tables"):
             flags += ["-I", str(directory)]
+        # Optimization tiers, so setup takes minutes rather than hours:
+        #  - the engine (main.dol), the runtime and the actor files the profile
+        #    saw run: -O2 + PGO. GVN's memory-dependence scan is off: on these
+        #    one-function-per-4096-instructions files it was two thirds of all
+        #    compile time for no measurable speed.
+        #  - every other actor file (enemies, bosses and props of places the
+        #    profile never visited, two thirds of the code): -O0. Frame cost is
+        #    the engine's: with every actor file at -O0 (the ship included)
+        #    sailing measured the same emulation time per field as the all -O2
+        #    + ThinLTO module, while the engine at -O0 was four times slower.
+        # No ThinLTO: its link step re-optimized the whole game for most of an
+        # hour; generated code calls across files through the dispatcher, so
+        # cross-file inlining bought nothing measurable.
+        full = ["-O2", "-mllvm", "-enable-gvn-memdep=false"]
+        light = ["-O0"]
+        hot = set(json.loads((HERE / "hot-sources.json").read_text())["optimize"])
+        rels = self.work / "rel/generated/rels"
+
+        def tier(source):
+            if rels in source.parents and source.relative_to(self.work).as_posix() not in hot:
+                return light
+            return full
 
         def compile_one(index, source):
             output = objects / f"{index:04d}.o"
-            self.run([self.cc, *flags, "-c", source, "-o", output], f"compile-{index:04d}")
-            return output
+            command = [self.cc, *tier(source), *flags, "-c", source, "-o", output]
+            for attempt in range(3):
+                try:
+                    self.run(command, f"compile-{index:04d}")
+                    return output
+                except RuntimeError:
+                    # Real-time antivirus scanning the object clang just
+                    # wrote can make its final rename fail; try again.
+                    if attempt == 2:
+                        raise
+                    time.sleep(1 + 2 * attempt)
 
+        # Largest -O2 files first so the end of the run stays parallel.
+        order = sorted(enumerate(sources), key=lambda item: -item[1].stat().st_size *
+                       (10 if tier(item[1]) is full else 1))
         with ThreadPoolExecutor(max_workers=self.args.jobs) as pool:
-            futures = [pool.submit(compile_one, i, source) for i, source in enumerate(sources)]
+            futures = [pool.submit(compile_one, i, source) for i, source in order]
             try:
                 for count, future in enumerate(as_completed(futures), 1):
                     future.result()
@@ -264,10 +297,9 @@ class Builder:
         response = self.work / "objects.rsp"
         response.write_text("\n".join('"' + p.as_posix() + '"' for p in sorted(objects.glob("*.o"))))
         module = self.work / MODULE_NAME
-        self.progress("Optimizing the whole game (this is the longest step)")
-        self.run([self.cc, "-shared", "-fuse-ld=lld", "-o", module, "@" + str(response), "-flto=thin",
-                  f"-Wl,--thinlto-jobs={self.args.jobs}", "-march=native",
-                  "-Wl,--no-insert-timestamp", "-Wl,--exclude-all-symbols", "-static", "-lwinpthread"], "link")
+        self.progress("Linking the game")
+        self.run([self.cc, "-shared", "-fuse-ld=lld", "-o", module, "@" + str(response),
+                  "-march=native", "-Wl,--no-insert-timestamp", "-Wl,--exclude-all-symbols", "-static", "-lwinpthread"], "link")
         if not module.is_file() or module.stat().st_size < 1024 * 1024:
             raise RuntimeError("Compiler did not produce a complete game module")
         return module
@@ -361,6 +393,25 @@ class Builder:
         self.progress("Ready to play", 1, 1, module=str(module), cache_hit=hit, finished=True)
 
 
+def default_jobs():
+    """Every logical CPU, but at most one compiler per 0.5 GB of free memory
+    (the largest translated files peak near 450 MB in clang)."""
+    jobs = os.cpu_count() or 2
+    if os.name == "nt":
+        import ctypes
+
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [("length", ctypes.c_uint32), ("load", ctypes.c_uint32),
+                        ("total", ctypes.c_uint64), ("available", ctypes.c_uint64),
+                        ("total_page", ctypes.c_uint64), ("available_page", ctypes.c_uint64),
+                        ("total_virtual", ctypes.c_uint64), ("available_virtual", ctypes.c_uint64),
+                        ("available_extended", ctypes.c_uint64)]
+        status = MemoryStatus(length=ctypes.sizeof(MemoryStatus))
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            jobs = min(jobs, int(status.available / (0.5 * 2**30)))
+    return max(1, min(jobs, 64))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("game_root", type=Path)
@@ -368,7 +419,7 @@ def main():
     parser.add_argument("--dolrecomp", help="Path to the matching DolRecomp executable")
     parser.add_argument("--cc", help="Path to LLVM-MinGW clang.exe")
     parser.add_argument("--profile", help="PGO profile (default: pgo/gzle01.profdata in the kit)")
-    parser.add_argument("--jobs", type=int, default=min(6, max(1, (os.cpu_count() or 2) // 2)))
+    parser.add_argument("--jobs", type=int, default=default_jobs())
     parser.add_argument("--status", type=Path, help="Atomic JSON progress file for the launcher")
     parser.add_argument("--rebuild", action="store_true")
     args = parser.parse_args()

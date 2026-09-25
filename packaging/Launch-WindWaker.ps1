@@ -189,7 +189,7 @@ try {
 
     if (-not $bundledModule) {
         # First launch translates and compiles the game code from the disc
-        # above (about an hour on a typical PC); the result is cached under the
+        # above (about 10 minutes on a typical PC); the result is cached under the
         # user dir and later launches reuse it after a quick check.
         Write-Host 'Game setup: building the game from your disc. The first time takes a while; later launches start right away.'
         $modulesDir = Join-Path $userDir 'modules'
