@@ -41,6 +41,9 @@
     --gold-deep: #D99A0B;
     --coral: #E4573D;
     --navy-line: #10306B;
+    --brass: #B08A4A;
+    --kelp: #1C6E5A;
+    --glow: #FFB7E6;
     --display: "Lilita One", "Arial Rounded MT Bold", "Trebuchet MS", sans-serif;
     --body: "Nunito", "Segoe UI", system-ui, sans-serif;
     --pixel: "Pixelify Sans", "Consolas", ui-monospace, monospace;
@@ -54,10 +57,13 @@
     margin: 0;
     font: 400 17px/1.6 var(--body);
     color: var(--foam);
-    background: linear-gradient(180deg, var(--sea) 0%, var(--sea-deep) 30%, var(--abyss) 65%, var(--trench) 100%);
+    /* the page is one long dive: surface blue under the beach, black-blue at the seabed */
+    background: linear-gradient(180deg, var(--sea) 0%, var(--sea) 17%, var(--sea-deep) 36%, var(--abyss) 66%, var(--trench) 90%, #03133A 100%);
     background-color: var(--trench);
     overflow-x: hidden;
   }
+  html { background: var(--trench); scrollbar-color: #2A73D5 var(--trench); }
+  ::selection { background: var(--gold); color: var(--ink); }
   a { color: inherit; }
   img, canvas, svg { max-width: 100%; }
   :focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; border-radius: 4px; }
@@ -71,13 +77,15 @@
     background: rgba(7, 32, 84, 0.82);
     backdrop-filter: blur(8px);
     border-bottom: 3px solid var(--navy-line);
+    box-shadow: 0 1px 0 rgba(255, 200, 61, 0.28);
   }
   .hud .wrap { display: flex; align-items: center; gap: 20px; min-height: 58px; }
   .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font-family: var(--display); font-size: 22px; letter-spacing: 0.01em; }
-  .brand svg { width: 30px; height: 30px; image-rendering: pixelated; }
+  .brand svg { width: 30px; height: 30px; image-rendering: pixelated; transition: transform .3s cubic-bezier(.3, 1.6, .5, 1); }
+  .brand:hover svg { transform: translateY(-2px) rotate(-8deg); }
   .hud nav { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
-  .hud nav a { font-family: var(--pixel); font-size: 15px; text-decoration: none; padding: 6px 10px; border-radius: 6px; color: var(--foam-soft); }
-  .hud nav a:hover { color: var(--foam); background: rgba(255,255,255,0.1); }
+  .hud nav a { font-family: var(--pixel); font-size: 15px; text-decoration: none; padding: 6px 10px; border-radius: 6px; color: var(--foam-soft); transition: color .15s, background-color .15s, box-shadow .15s; }
+  .hud nav a:hover { color: var(--foam); background: rgba(255,255,255,0.1); box-shadow: inset 0 -2px 0 var(--gold); }
   .hud .get { font-family: var(--pixel); font-weight: 600; font-size: 15px; text-decoration: none; color: var(--ink); background: var(--gold); border: 2px solid var(--ink); box-shadow: 3px 3px 0 var(--ink); padding: 6px 12px; border-radius: 6px; white-space: nowrap; }
   .hud .get:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--ink); }
   @media (max-width: 720px) { .hud nav { display: none; } .hud .get { margin-left: auto; } }
@@ -117,8 +125,16 @@
     font-family: var(--pixel); font-weight: 600; font-size: 18px; text-decoration: none;
     padding: 12px 20px; border-radius: 8px; border: 3px solid var(--ink);
     transition: transform .12s ease, box-shadow .12s ease;
+    position: relative; overflow: hidden;
   }
   .btn svg { width: 20px; height: 20px; }
+  /* a glint runs across the gold button, like light off a new treasure */
+  .btn-gold::after {
+    content: ""; position: absolute; top: -20%; bottom: -20%; left: -45%; width: 32%; pointer-events: none;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.7), transparent);
+    transform: translateX(0) skewX(-20deg);
+  }
+  .btn-gold:hover::after { transform: translateX(520%) skewX(-20deg); transition: transform .65s ease; }
   .btn-gold { background: var(--gold); color: var(--ink); box-shadow: 5px 5px 0 var(--ink); }
   .btn-gold:hover { transform: translate(-2px, -2px); box-shadow: 7px 7px 0 var(--ink); }
   .btn-gold:active { transform: translate(3px, 3px); box-shadow: 2px 2px 0 var(--ink); }
@@ -140,20 +156,44 @@
     animation: lap 5s ease-in-out infinite;
   }
   @keyframes lap { 50% { transform: translateY(4px); } }
-  @media (prefers-reduced-motion: reduce) { .beach::before { animation: none; } }
+  /* the tide at the foot of the beach, rolling into the sea below */
+  .beach::after {
+    content: ""; position: absolute; left: -160px; right: 0; bottom: -2px; height: 24px;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 160 24'%3E%3Cpath d='M0 12 Q20 2 40 12 T80 12 T120 12 T160 12 V24 H0Z' fill='%231B5CC2'/%3E%3Cpath d='M0 12 Q20 2 40 12 T80 12 T120 12 T160 12' fill='none' stroke='%23fff' stroke-width='3'/%3E%3C/svg%3E") 0 100% / 160px 24px repeat-x;
+    animation: tide 9s linear infinite;
+  }
+  @keyframes tide { to { transform: translateX(160px); } }
+  .palm { position: absolute; z-index: 1; right: clamp(6px, 5vw, 90px); bottom: 46px; width: clamp(104px, 12vw, 176px); height: auto; overflow: visible; pointer-events: none; }
+  .palm .fronds { transform-box: view-box; transform-origin: 72px 44px; animation: frond 5.5s ease-in-out infinite alternate; }
+  @keyframes frond { from { transform: rotate(-2.5deg); } to { transform: rotate(3deg); } }
+  .shore-bit { position: absolute; z-index: 1; pointer-events: none; }
+  .starfish { left: 34%; bottom: 14px; width: 24px; transform: rotate(16deg); }
+  .shell { left: 61%; bottom: 24px; width: 20px; }
+  @media (max-width: 560px) { .shell { display: none; } .starfish { left: 52%; } }
+  @media (prefers-reduced-motion: reduce) { .beach::before, .beach::after, .palm .fronds { animation: none; } }
 
   /* ---------- sections ---------- */
-  section { padding-block: clamp(64px, 10vw, 112px); position: relative; }
-  .kicker { font-family: var(--pixel); font-size: 15px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--gold); margin: 0 0 10px; }
-  h2 { font-family: var(--display); font-weight: 400; font-size: clamp(34px, 5vw, 56px); line-height: 1.02; margin: 0 0 16px; text-wrap: balance; }
+  section { padding-block: clamp(64px, 10vw, 112px); position: relative; overflow-x: clip; }
+  section > .wrap, footer > .wrap { position: relative; z-index: 1; }
+  /* kicker: a gust of wind that ends in a curl, then trails off */
+  .kicker { display: flex; align-items: center; gap: 10px; font-family: var(--pixel); font-size: 15px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--gold); margin: 0 0 10px; }
+  .kicker::before {
+    content: ""; flex: 0 0 40px; height: 16px;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 16'%3E%3Cpath d='M2 12 H22 C30 12 35 8.5 35 5 C35 2.2 32.6 1 30.2 1 C27 1 24.6 3 24.6 5.6 C24.6 7.6 26.2 8.8 28.2 8.8' fill='none' stroke='%23FFC83D' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  }
+  .kicker::after { content: ""; flex: 0 0 56px; height: 2px; border-radius: 2px; background: linear-gradient(90deg, rgba(255, 200, 61, 0.7), transparent); }
+  h2 { font-family: var(--display); font-weight: 400; font-size: clamp(34px, 5vw, 56px); line-height: 1.02; margin: 0 0 16px; text-wrap: balance; text-shadow: 0 4px 0 rgba(3, 18, 56, 0.55); }
   .intro { max-width: 40em; color: var(--foam-soft); margin: 0 0 40px; font-size: 18px; }
   h3 { font-family: var(--display); font-weight: 400; font-size: 24px; line-height: 1.15; margin: 0 0 8px; }
 
   .parchment {
-    background: var(--parchment);
+    /* sun-bleached middle, tea-stained edges, and a thin inked frame inside the border */
+    background: radial-gradient(130% 100% at 50% 32%, #FCF3DC 0%, var(--parchment) 52%, #EEDBAE 100%);
+    background-color: var(--parchment);
     color: var(--ink);
     border: 3px solid var(--ink);
     border-radius: 14px;
+    outline: 1.5px solid rgba(176, 138, 74, 0.45); outline-offset: -9px;
     box-shadow: 0 6px 0 var(--parchment-edge), 0 6px 0 3px var(--ink), 0 24px 40px rgba(2, 12, 40, 0.35);
   }
 
@@ -163,14 +203,35 @@
   @media (max-width: 560px) { .aboard { grid-template-columns: 1fr; } }
   .card { padding: 26px 24px 24px; position: relative; }
   .card p { margin: 0; color: var(--ink-soft); font-size: 16px; }
-  .card .ico { width: 48px; height: 48px; margin-bottom: 14px; image-rendering: pixelated; }
+  /* each icon sits in a round item button, like the ones in the corner of the game's HUD */
+  .card .ico {
+    width: 70px; height: 70px; padding: 12px; margin-bottom: 16px; image-rendering: pixelated;
+    border-radius: 50%; border: 3px solid var(--ink);
+    background: radial-gradient(circle at 36% 30%, #FFFFFF 0%, #E6EBF3 42%, #B9C4D8 100%);
+    box-shadow: inset 0 0 0 3px var(--gold), inset 0 -6px 0 3px rgba(31, 39, 64, 0.12), 0 4px 0 var(--ink);
+    transition: transform .3s cubic-bezier(.3, 1.6, .5, 1);
+  }
+  .card:hover .ico { transform: translateY(-4px) rotate(-8deg); }
   .card .tag { position: absolute; top: 18px; right: 18px; font-family: var(--pixel); font-size: 13px; color: var(--sea); background: #E9F1FF; border: 2px solid var(--sea); border-radius: 6px; padding: 1px 7px; }
 
   /* log / stats */
-  .log { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; margin-top: 80px; border-top: 2px dashed rgba(211, 230, 255, 0.35); padding-top: 36px; }
+  .log {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; margin-top: 80px; padding-top: 40px;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 10'%3E%3Cpath d='M0 5 Q6 0 12 5 T24 5 T36 5 T48 5' fill='none' stroke='%23D3E6FF' stroke-opacity='.4' stroke-width='2'/%3E%3C/svg%3E") 0 0 / 48px 10px repeat-x;
+  }
   @media (max-width: 860px) { .log { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   .log div { display: grid; gap: 6px; align-content: start; }
-  .log strong { font-family: var(--display); font-weight: 400; font-size: clamp(40px, 5vw, 60px); line-height: 1; color: var(--gold); font-variant-numeric: tabular-nums; }
+  /* a floating gem over each figure, the four colours of the game's currency */
+  .log div::before {
+    content: ""; width: 18px; height: 27px; margin-bottom: 4px;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 24'%3E%3Cpath d='M8 1 L15 6 V18 L8 23 L1 18 V6Z' fill='%233DBE5A' stroke='%231F2740' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M8 5 L11.5 7.5 V16.5 L8 19 L4.5 16.5 V7.5Z' fill='%237FE39A'/%3E%3Cpath d='M4.5 7.5 L8 5 V12Z' fill='%23fff' fill-opacity='.75'/%3E%3C/svg%3E") center / contain no-repeat;
+    animation: bob 3.2s ease-in-out infinite;
+  }
+  .log div:nth-child(2)::before { animation-delay: -0.8s; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 24'%3E%3Cpath d='M8 1 L15 6 V18 L8 23 L1 18 V6Z' fill='%232E7FE0' stroke='%231F2740' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M8 5 L11.5 7.5 V16.5 L8 19 L4.5 16.5 V7.5Z' fill='%238CC4FF'/%3E%3Cpath d='M4.5 7.5 L8 5 V12Z' fill='%23fff' fill-opacity='.75'/%3E%3C/svg%3E"); }
+  .log div:nth-child(3)::before { animation-delay: -1.6s; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 24'%3E%3Cpath d='M8 1 L15 6 V18 L8 23 L1 18 V6Z' fill='%23F5B82E' stroke='%231F2740' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M8 5 L11.5 7.5 V16.5 L8 19 L4.5 16.5 V7.5Z' fill='%23FFE38A'/%3E%3Cpath d='M4.5 7.5 L8 5 V12Z' fill='%23fff' fill-opacity='.75'/%3E%3C/svg%3E"); }
+  .log div:nth-child(4)::before { animation-delay: -2.4s; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 24'%3E%3Cpath d='M8 1 L15 6 V18 L8 23 L1 18 V6Z' fill='%23E4573D' stroke='%231F2740' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M8 5 L11.5 7.5 V16.5 L8 19 L4.5 16.5 V7.5Z' fill='%23FF9C85'/%3E%3Cpath d='M4.5 7.5 L8 5 V12Z' fill='%23fff' fill-opacity='.75'/%3E%3C/svg%3E"); }
+  @keyframes bob { 50% { transform: translateY(-5px); } }
+  .log strong { font-family: var(--display); font-weight: 400; font-size: clamp(40px, 5vw, 60px); line-height: 1; color: var(--gold); font-variant-numeric: tabular-nums; text-shadow: 0 4px 0 rgba(3, 18, 56, 0.6); }
   .log span { color: var(--foam-soft); font-size: 15px; max-width: 18em; }
 
   /* voyage */
@@ -182,10 +243,20 @@
       linear-gradient(90deg, rgba(27, 92, 194, 0.12) 1px, transparent 1px);
     background-size: 44px 44px;
   }
+  /* a few inked wave marks in the open water above the islands, as on a sea chart */
+  .chart::after {
+    content: ""; position: absolute; left: 0; right: 0; top: 0; height: 100px; pointer-events: none; opacity: 0.45;
+    --wv: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 34 12'%3E%3Cpath d='M2 8 q4 -6 8 0 t8 0 t8 0 t8 0' fill='none' stroke='%231B5CC2' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+    background: var(--wv) 12% 34px / 34px 12px no-repeat, var(--wv) 31% 60px / 26px 10px no-repeat, var(--wv) 57% 28px / 34px 12px no-repeat, var(--wv) 73% 58px / 26px 10px no-repeat;
+  }
+  .compass { position: absolute; z-index: 1; top: 12px; right: 16px; width: 86px; height: 86px; transform: rotate(-9deg); pointer-events: none; }
+  @media (max-width: 860px) { .compass { width: 60px; height: 60px; top: 10px; right: 10px; } }
+  .chart .ship { position: absolute; z-index: 1; left: calc(50% - 21px); top: 79px; width: 42px; height: 34px; pointer-events: none; animation: rock 3.4s ease-in-out infinite; }
+  @keyframes rock { 0%, 100% { transform: translateY(0) rotate(-4deg); } 50% { transform: translateY(-3px) rotate(4deg); } }
   .route { position: absolute; left: 6%; right: 6%; top: 110px; height: 40px; pointer-events: none; }
   .route path { fill: none; stroke: var(--coral); stroke-width: 3; stroke-dasharray: 2 10; stroke-linecap: round; }
   .isles { position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 40px 28px; list-style: none; margin: 0; padding: 70px 0 0; }
-  @media (max-width: 860px) { .isles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .route { display: none; } }
+  @media (max-width: 860px) { .isles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .route, .chart .ship { display: none; } }
   @media (max-width: 520px) { .isles { grid-template-columns: 1fr; } }
   .isle { display: grid; gap: 10px; align-content: start; }
   .mound {
@@ -197,6 +268,17 @@
   .mound::after {
     content: ""; position: absolute; left: -12%; right: -12%; bottom: -8px; height: 12px;
     background: #8FC4F5; border: 3px solid var(--ink); border-radius: 12px;
+  }
+  /* a palm on each island; the last one is where X marks the spot */
+  .mound::before {
+    content: ""; position: absolute; left: 16%; bottom: calc(100% - 17px); width: 30px; height: 40px;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 40'%3E%3Cpath d='M16 40 C15 30 13 21 15 12' fill='none' stroke='%231F2740' stroke-width='6' stroke-linecap='round'/%3E%3Cpath d='M16 40 C15 30 13 21 15 12' fill='none' stroke='%23A45A2F' stroke-width='3' stroke-linecap='round'/%3E%3Cg fill='%233FAE5A' stroke='%231F2740' stroke-width='1.5' stroke-linejoin='round'%3E%3Cpath d='M15 12 C9 6 3 7 1 14 C6 10 10 11 15 13Z'/%3E%3Cpath d='M15 12 C21 5 27 6 29 13 C24 9 20 10 15 13Z'/%3E%3Cpath d='M15 12 C12 5 8 1 3 2 C8 4 12 7 15 13Z'/%3E%3Cpath d='M15 12 C18 5 22 1 27 2 C22 4 18 7 15 13Z'/%3E%3C/g%3E%3Ccircle cx='15' cy='14' r='2' fill='%236B3B1F'/%3E%3C/svg%3E") center bottom / contain no-repeat;
+  }
+  .isle:nth-child(2) .mound::before { left: auto; right: 14%; transform: scaleX(-1); }
+  .isle:nth-child(3) .mound::before { left: 22%; }
+  .isle:last-child .mound::before {
+    left: auto; right: 15%; bottom: auto; top: 20px; width: 18px; height: 18px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'%3E%3Cpath d='M4 4 L14 14 M14 4 L4 14' stroke='%231F2740' stroke-width='6.5' stroke-linecap='round'/%3E%3Cpath d='M4 4 L14 14 M14 4 L4 14' stroke='%23E4573D' stroke-width='3.2' stroke-linecap='round'/%3E%3C/svg%3E");
   }
   .mound .num {
     position: absolute; left: 50%; top: 50%; transform: translate(-50%, -40%);
@@ -210,37 +292,52 @@
   /* manifest */
   .manifest { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px; }
   @media (max-width: 760px) { .manifest { grid-template-columns: 1fr; } }
-  .hold { padding: 28px 28px 24px; }
-  .hold h3 { display: flex; align-items: center; gap: 10px; }
+  .hold { padding: 28px 28px 24px; position: relative; }
+  .hold h3 { display: flex; align-items: center; gap: 10px; padding-right: 56px; }
   .hold h3 small { font-family: var(--pixel); font-size: 14px; color: var(--sea); font-weight: 400; }
+  .hold .crest { position: absolute; top: 20px; right: 22px; width: 44px; height: 44px; image-rendering: pixelated; pointer-events: none; }
   .hold ul { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 12px; }
   .hold li { display: grid; grid-template-columns: 22px 1fr; gap: 12px; align-items: start; color: var(--ink-soft); font-size: 16px; }
   .hold li b { color: var(--ink); font-weight: 800; }
-  .hold li::before { content: ""; width: 14px; height: 14px; margin-top: 6px; background: var(--coral); border: 2px solid var(--ink); transform: rotate(45deg); }
-  .hold.ours li::before { background: var(--gold); }
-  .space { margin-top: 32px; display: flex; flex-wrap: wrap; gap: 12px 28px; font-family: var(--pixel); font-size: 15px; color: var(--foam-soft); }
-  .space span b { color: var(--foam); font-weight: 600; }
+  .hold li::before {
+    content: ""; width: 14px; height: 21px; margin-top: 2px; justify-self: center;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 24'%3E%3Cpath d='M8 1 L15 6 V18 L8 23 L1 18 V6Z' fill='%233DBE5A' stroke='%231F2740' stroke-width='1.8' stroke-linejoin='round'/%3E%3Cpath d='M8 5 L11.5 7.5 V16.5 L8 19 L4.5 16.5 V7.5Z' fill='%237FE39A'/%3E%3Cpath d='M4.5 7.5 L8 5 V12Z' fill='%23fff' fill-opacity='.75'/%3E%3C/svg%3E") center / contain no-repeat;
+  }
+  .hold.ours li::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 24'%3E%3Cpath d='M8 1 L15 6 V18 L8 23 L1 18 V6Z' fill='%23F5B82E' stroke='%231F2740' stroke-width='1.8' stroke-linejoin='round'/%3E%3Cpath d='M8 5 L11.5 7.5 V16.5 L8 19 L4.5 16.5 V7.5Z' fill='%23FFE38A'/%3E%3Cpath d='M4.5 7.5 L8 5 V12Z' fill='%23fff' fill-opacity='.75'/%3E%3C/svg%3E"); }
+  .space { margin-top: 32px; display: flex; flex-wrap: wrap; gap: 12px; font-family: var(--pixel); font-size: 15px; color: var(--foam-soft); }
+  .space span { padding: 6px 14px; border-radius: 999px; background: rgba(4, 27, 71, 0.5); border: 2px solid rgba(211, 230, 255, 0.22); }
+  .space span b { color: var(--gold); font-weight: 600; }
 
   /* faq */
   .faq { display: grid; gap: 14px; max-width: 860px; }
   .faq details { padding: 0; }
   .faq summary {
-    cursor: pointer; list-style: none; padding: 18px 56px 18px 22px; position: relative;
-    font-family: var(--display); font-size: 21px; line-height: 1.25;
+    cursor: pointer; list-style: none; padding: 18px 68px 18px 22px; position: relative;
+    font-family: var(--display); font-size: 21px; line-height: 1.25; transition: color .15s;
   }
+  .faq summary:hover { color: var(--sea-deep); }
   .faq summary::-webkit-details-marker { display: none; }
+  /* green A to open, red B to close */
   .faq summary::after {
-    content: "+"; position: absolute; right: 20px; top: 50%; transform: translateY(-50%);
-    font-family: var(--pixel); font-size: 26px; color: var(--sea);
+    content: "+"; position: absolute; right: 18px; top: 50%; transform: translateY(-50%);
+    width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%;
+    font-family: var(--pixel); font-weight: 600; font-size: 24px; line-height: 1; color: #FFFFFF;
+    background: #3DBE5A; border: 3px solid var(--ink);
+    box-shadow: inset 0 -4px 0 rgba(0, 0, 0, 0.18), 0 3px 0 var(--ink);
+    transition: transform .15s ease, box-shadow .15s ease, background-color .15s;
   }
-  .faq details[open] summary::after { content: "\2212"; }
+  .faq summary:hover::after { transform: translateY(-50%) scale(1.08); }
+  .faq summary:active::after { transform: translateY(calc(-50% + 2px)); box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.18), 0 1px 0 var(--ink); }
+  .faq details[open] summary::after { content: "\2212"; background: var(--coral); }
   .faq .a { padding: 0 22px 20px; color: var(--ink-soft); }
+  .faq details[open] .a { animation: unroll .35s ease-out; }
+  @keyframes unroll { from { opacity: 0; transform: translateY(-6px); } }
   .faq .a p { margin: 0 0 10px; }
   .faq .a p:last-child { margin: 0; }
   code { font-family: var(--pixel); font-size: 0.95em; background: rgba(27, 92, 194, 0.1); padding: 1px 6px; border-radius: 4px; color: var(--sea-deep); }
 
   /* footer */
-  footer { padding-block: 72px 110px; border-top: 3px solid rgba(211, 230, 255, 0.2); position: relative; }
+  footer { padding-block: 72px clamp(236px, 20vw, 250px); border-top: 3px solid rgba(211, 230, 255, 0.2); position: relative; overflow: hidden; }
   .foot { display: grid; grid-template-columns: 1.3fr 1fr; gap: 40px; }
   @media (max-width: 760px) { .foot { grid-template-columns: 1fr; } }
   .foot h3 { color: var(--gold); }
@@ -250,6 +347,97 @@
   .legal { margin-top: 36px; font-size: 13.5px; color: rgba(211, 230, 255, 0.75); max-width: 60em; }
   .links { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 18px; font-family: var(--pixel); }
   .links a { color: var(--foam); }
+  .links a:hover { color: var(--gold); }
+
+  /* ---------- below the surface ---------- */
+  /* sunbeams reaching down from the surface into the first section */
+  .rays {
+    position: absolute; left: 0; right: 0; top: 0; height: min(900px, 100%); z-index: 0; overflow: hidden; pointer-events: none;
+    -webkit-mask-image: linear-gradient(#000 0%, rgba(0,0,0,0.35) 40%, transparent 85%);
+            mask-image: linear-gradient(#000 0%, rgba(0,0,0,0.35) 40%, transparent 85%);
+  }
+  .rays::before {
+    content: ""; position: absolute; left: -30%; right: -30%; top: 0; bottom: 0;
+    /* two ray sets from one point above the water, soft-edged, at different spacings */
+    background:
+      repeating-conic-gradient(from 170deg at 50% -70%, transparent 0deg, rgba(200, 232, 255, 0.12) 0.9deg, transparent 1.8deg, transparent 4.6deg),
+      repeating-conic-gradient(from 172.3deg at 50% -70%, transparent 0deg, rgba(200, 232, 255, 0.07) 0.6deg, transparent 1.2deg, transparent 7.1deg);
+    transform-origin: 50% 0;
+    animation: sway 16s ease-in-out infinite alternate;
+  }
+  @keyframes sway { from { transform: skewX(-5deg); } to { transform: skewX(5deg); } }
+
+  .bubbles { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+  .bubbles i {
+    position: absolute; left: var(--x); bottom: -30px; width: var(--s); height: var(--s); border-radius: 50%;
+    border: 2px solid rgba(211, 230, 255, 0.5);
+    background: radial-gradient(circle at 32% 30%, rgba(255,255,255,0.8) 0 16%, rgba(255,255,255,0.08) 22% 100%);
+    opacity: 0; animation: rise var(--d) linear var(--w) infinite;
+  }
+  @keyframes rise {
+    0% { transform: translate(0, 0); opacity: 0; }
+    8% { opacity: 0.9; }
+    25% { transform: translate(9px, -280px); }
+    50% { transform: translate(-7px, -560px); }
+    75% { transform: translate(7px, -840px); }
+    92% { opacity: 0.7; }
+    100% { transform: translate(0, -1120px); opacity: 0; }
+  }
+
+  /* fish drifting past behind the parchment */
+  .swimmer { position: absolute; left: 0; z-index: 0; pointer-events: none; }
+  .school { top: 6px; width: 150px; animation: swim-r 58s linear infinite; animation-delay: -14s; }
+  .bigfish { top: 10px; width: 120px; animation: swim-l 74s linear infinite; animation-delay: -40s; }
+  @media (max-width: 700px) { .school { width: 104px; } .bigfish { width: 88px; } }
+  @keyframes swim-r {
+    from { transform: translate(-220px, 0); }
+    50% { transform: translate(50vw, 10px); }
+    to { transform: translate(calc(100vw + 40px), 0); }
+  }
+  @keyframes swim-l {
+    from { transform: translate(calc(100vw + 40px), 0); }
+    50% { transform: translate(45vw, -8px); }
+    to { transform: translate(-220px, 0); }
+  }
+
+  /* jellyfish glowing in the dark water beside the questions */
+  .jelly { position: absolute; z-index: 0; pointer-events: none; width: 58px; animation: drift 7s ease-in-out infinite; }
+  .jelly.j1 { top: 26%; right: calc(max(0px, (100% - var(--wrap)) / 2) + 96px); }
+  .jelly.j2 { top: 58%; right: calc(max(0px, (100% - var(--wrap)) / 2) + 24px); width: 42px; animation-duration: 9s; animation-delay: -3s; }
+  @keyframes drift { 50% { transform: translateY(-18px); } }
+  @media (max-width: 1100px) { .jelly { display: none; } }
+
+  /* the seabed: the sunken kingdom beneath the Great Sea */
+  .seabed { position: absolute; left: 0; right: 0; bottom: 0; height: 220px; z-index: 0; pointer-events: none; }
+  .seabed svg { display: block; width: 100%; height: 100%; }
+  .seabed .kelp { transform-box: fill-box; transform-origin: 50% 100%; animation: kelp var(--d, 6s) ease-in-out var(--w, 0s) infinite alternate; }
+  @keyframes kelp { from { transform: rotate(-5deg); } to { transform: rotate(5deg); } }
+  .seabed .glint { transform-box: fill-box; transform-origin: 50% 50%; animation: glint 4.5s ease-in-out infinite; }
+  @keyframes glint { 0%, 70%, 100% { opacity: 0; transform: scale(0.3); } 80% { opacity: 1; transform: scale(1); } }
+
+  /* depth gauge: how far down the page you've dived */
+  .gauge {
+    position: fixed; right: 22px; top: 110px; bottom: 56px; width: 2px; z-index: 6; pointer-events: none;
+    background: repeating-linear-gradient(180deg, rgba(211, 230, 255, 0.45) 0 2px, transparent 2px 24px);
+    opacity: 0; transition: opacity .4s ease;
+  }
+  .gauge.on { opacity: 1; }
+  .gauge::before, .gauge::after { content: ""; position: absolute; left: -5px; width: 12px; height: 2px; background: rgba(211, 230, 255, 0.6); }
+  .gauge::before { top: 0; }
+  .gauge::after { bottom: 0; }
+  .gauge-mark {
+    position: absolute; right: 10px; top: -12px; display: flex; align-items: center; gap: 4px;
+    font: 600 13px/1 var(--pixel); color: var(--foam); white-space: nowrap; font-variant-numeric: tabular-nums;
+    background: rgba(7, 32, 84, 0.9); border: 2px solid var(--gold); border-radius: 999px; padding: 4px 9px;
+  }
+  .gauge-mark::after { content: ""; position: absolute; right: -9px; top: 50%; margin-top: -4px; border: 4px solid transparent; border-left: 6px solid var(--gold); }
+  @media (max-width: 1239px) { .gauge { display: none; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .bubbles, .swimmer, .jelly { display: none; }
+    .rays::before, .log div::before, .chart .ship, .seabed .kelp, .seabed .glint { animation: none; }
+    .btn-gold:hover::after { transition: none; }
+  }
 
   /* ---------- the deckhand ---------- */
   #deckhand { position: absolute; left: 0; top: 0; width: 120px; height: 150px; pointer-events: none; z-index: 15; image-rendering: pixelated; will-change: transform; }
@@ -310,9 +498,30 @@
       </div>
     </div>
     <div class="beach" data-ground data-ground-offset="30" aria-hidden="true"></div>
+    <svg class="palm" viewBox="0 0 160 200" aria-hidden="true">
+      <ellipse cx="104" cy="196" rx="42" ry="5" fill="rgba(160,110,40,0.35)"/>
+      <path d="M64 44 C60 90 72 150 96 198 L114 198 C90 150 78 96 80 44 Z" fill="#B7793F" stroke="#1F2740" stroke-width="3.5" stroke-linejoin="round"/>
+      <path d="M62 72 q9 4 18 -1 M63 98 q10 4 20 -1 M68 124 q10 4 21 -2 M76 150 q10 4 22 -2 M86 174 q10 4 22 -2" fill="none" stroke="#7A4A2A" stroke-width="2.5" stroke-linecap="round"/>
+      <g class="fronds">
+        <g fill="#3FAE5A" stroke="#1F2740" stroke-width="3" stroke-linejoin="round">
+          <path d="M70 46 C52 52 36 70 34 94 C46 74 58 62 72 52 Z"/>
+          <path d="M74 46 C96 54 110 72 112 96 C100 76 88 62 72 52 Z"/>
+          <path d="M72 44 C50 26 20 28 4 54 C24 42 48 42 72 50 Z"/>
+          <path d="M72 44 C98 26 132 30 154 60 C128 44 100 42 74 50 Z"/>
+          <path d="M72 44 C58 14 34 4 16 10 C40 16 56 28 70 48 Z"/>
+          <path d="M72 44 C84 12 108 2 130 10 C106 16 88 28 76 48 Z"/>
+        </g>
+        <path d="M70 46 C46 36 24 38 8 52 M74 46 C100 36 126 40 148 56 M70 44 C56 22 38 12 20 11 M74 44 C86 20 106 10 126 11" fill="none" stroke="#2A8A45" stroke-width="2" stroke-linecap="round"/>
+        <g fill="#6B3B1F" stroke="#1F2740" stroke-width="2.5"><circle cx="65" cy="52" r="6"/><circle cx="79" cy="53" r="6"/><circle cx="72" cy="58" r="6"/></g>
+      </g>
+    </svg>
+    <svg class="shore-bit starfish" viewBox="-13 -13 26 26" aria-hidden="true"><path d="M0 -11 L3 -3.6 L10.5 -3.4 L4.6 1.4 L6.6 9 L0 4.6 L-6.6 9 L-4.6 1.4 L-10.5 -3.4 L-3 -3.6 Z" fill="#F08A5D" stroke="#1F2740" stroke-width="2" stroke-linejoin="round"/><g fill="#FFD3A8"><circle cx="0" cy="-5" r="1"/><circle cx="4" cy="-1" r="1"/><circle cx="-4" cy="-1" r="1"/><circle cx="2.6" cy="4" r="1"/><circle cx="-2.6" cy="4" r="1"/></g></svg>
+    <svg class="shore-bit shell" viewBox="0 0 20 16" aria-hidden="true"><path d="M2 13 C2 5 6 1 10 1 C14 1 18 5 18 13 Z" fill="#FFF1E4" stroke="#1F2740" stroke-width="2" stroke-linejoin="round"/><path d="M10 2 V13 M6 3.5 L7 13 M14 3.5 L13 13" stroke="#E4A58A" stroke-width="1.5" stroke-linecap="round"/><path d="M7 13 H13 V15 H7 Z" fill="#FFF1E4" stroke="#1F2740" stroke-width="1.6" stroke-linejoin="round"/></svg>
   </div>
 
   <section id="aboard">
+    <div class="rays" aria-hidden="true"></div>
+    <div class="bubbles" aria-hidden="true"><i style="--x:4%;--s:10px;--d:15s;--w:-3s"></i><i style="--x:17%;--s:6px;--d:11s;--w:-8s"></i><i style="--x:52%;--s:8px;--d:17s;--w:-11s"></i><i style="--x:88%;--s:12px;--d:19s;--w:-5s"></i><i style="--x:96%;--s:7px;--d:13s;--w:-1s"></i></div>
     <div class="wrap">
       <p class="kicker">What's aboard</p>
       <h2>Your ship, rebuilt for PC</h2>
@@ -361,12 +570,46 @@
   </section>
 
   <section id="voyage">
+    <svg class="swimmer school" viewBox="0 0 150 56" aria-hidden="true">
+      <defs><path id="fish-sym" d="M7 6 C11 0 21 0 27 6 C21 12 11 12 7 6 Z M8 6 L1 1 L2.4 6 L1 11 Z"/></defs>
+      <g fill="#8FC4F5" fill-opacity="0.34">
+        <use href="#fish-sym" transform="translate(96 4)"/>
+        <use href="#fish-sym" transform="translate(70 18) scale(0.85)"/>
+        <use href="#fish-sym" transform="translate(112 26) scale(0.9)"/>
+        <use href="#fish-sym" transform="translate(44 8) scale(0.75)"/>
+        <use href="#fish-sym" transform="translate(80 38) scale(0.8)"/>
+        <use href="#fish-sym" transform="translate(30 30) scale(0.7)"/>
+      </g>
+    </svg>
     <div class="wrap">
       <p class="kicker">The voyage</p>
       <h2>From your disc to the open sea</h2>
       <p class="intro">Setup happens once. After that, every launch goes straight to the title screen.</p>
       <div class="chart parchment" data-ground>
         <svg class="route" viewBox="0 0 1000 40" preserveAspectRatio="none" aria-hidden="true"><path d="M60 20 C 200 -10, 300 50, 375 20 S 560 -10, 625 20 S 820 50, 940 20"/></svg>
+        <svg class="compass" viewBox="-50 -50 100 100" aria-hidden="true">
+          <circle r="45" fill="#FBF1D8" stroke="#1F2740" stroke-width="3"/>
+          <circle r="38" fill="none" stroke="#B08A4A" stroke-width="1.6" stroke-dasharray="2 4"/>
+          <g stroke="#1F2740" stroke-width="1.4" stroke-linejoin="round">
+            <g transform="rotate(45)"><path d="M0 -30 L5 -5 L0 0 Z" fill="#FFC83D"/><path d="M0 -30 L-5 -5 L0 0 Z" fill="#D99A0B"/></g>
+            <g transform="rotate(135)"><path d="M0 -30 L5 -5 L0 0 Z" fill="#FFC83D"/><path d="M0 -30 L-5 -5 L0 0 Z" fill="#D99A0B"/></g>
+            <g transform="rotate(225)"><path d="M0 -30 L5 -5 L0 0 Z" fill="#FFC83D"/><path d="M0 -30 L-5 -5 L0 0 Z" fill="#D99A0B"/></g>
+            <g transform="rotate(315)"><path d="M0 -30 L5 -5 L0 0 Z" fill="#FFC83D"/><path d="M0 -30 L-5 -5 L0 0 Z" fill="#D99A0B"/></g>
+            <g transform="rotate(90)"><path d="M0 -42 L7 -7 L0 0 Z" fill="#F7EACB"/><path d="M0 -42 L-7 -7 L0 0 Z" fill="#1B5CC2"/></g>
+            <g transform="rotate(180)"><path d="M0 -42 L7 -7 L0 0 Z" fill="#F7EACB"/><path d="M0 -42 L-7 -7 L0 0 Z" fill="#1B5CC2"/></g>
+            <g transform="rotate(270)"><path d="M0 -42 L7 -7 L0 0 Z" fill="#F7EACB"/><path d="M0 -42 L-7 -7 L0 0 Z" fill="#1B5CC2"/></g>
+            <path d="M0 -42 L7 -7 L0 0 Z" fill="#F2907A"/><path d="M0 -42 L-7 -7 L0 0 Z" fill="#E4573D"/>
+          </g>
+          <circle r="5" fill="#FFC83D" stroke="#1F2740" stroke-width="2"/>
+        </svg>
+        <svg class="ship" viewBox="0 0 42 34" aria-hidden="true">
+          <path d="M21 3 V23" stroke="#1F2740" stroke-width="2.5" stroke-linecap="round"/>
+          <path d="M23 4 Q35 11 33 22 H23 Z" fill="#FFF6DC" stroke="#1F2740" stroke-width="2" stroke-linejoin="round"/>
+          <path d="M23.8 11 H33.6 V14 H23.8 Z" fill="#E4573D"/>
+          <path d="M21 3 L13 5 L21 7.5 Z" fill="#FFC83D" stroke="#1F2740" stroke-width="1.6" stroke-linejoin="round"/>
+          <path d="M4 23 H38 L32 30 H10 Z" fill="#A45A2F" stroke="#1F2740" stroke-width="2.2" stroke-linejoin="round"/>
+          <path d="M1 32 q4 -3 8 0 t8 0 t8 0 t8 0 t8 0" fill="none" stroke="#1B5CC2" stroke-width="2" stroke-linecap="round"/>
+        </svg>
         <ol class="isles">
           <li class="isle">
             <div class="mound" data-ground data-ground-inset="10"><span class="num">1</span></div>
@@ -394,12 +637,21 @@
   </section>
 
   <section id="manifest">
+    <svg class="swimmer bigfish" viewBox="0 0 120 48" aria-hidden="true">
+      <g fill="#8FC4F5" fill-opacity="0.26">
+        <path d="M2 24 C18 6 62 4 86 20 L108 8 L103 24 L108 40 L86 28 C62 44 18 42 2 24 Z"/>
+        <path d="M34 11 C42 0 58 0 66 9 Z"/>
+      </g>
+      <circle cx="16" cy="21" r="2.4" fill="#D3E6FF" fill-opacity="0.5"/>
+    </svg>
+    <div class="bubbles" aria-hidden="true"><i style="--x:7%;--s:8px;--d:16s;--w:-6s"></i><i style="--x:47%;--s:6px;--d:12s;--w:-2s"></i><i style="--x:93%;--s:10px;--d:18s;--w:-12s"></i></div>
     <div class="wrap">
       <p class="kicker">Ship's manifest</p>
       <h2>What you bring, what we bring</h2>
       <p class="intro">Everything in the download is free software. The game itself stays yours.</p>
       <div class="manifest">
         <div class="hold parchment" data-ground>
+          <svg class="crest" viewBox="0 0 12 12" shape-rendering="crispEdges" aria-hidden="true"><path d="M4 0h4v1h2v1h1v2h1v4h-1v2h-1v1H8v1H4v-1H2v-1H1V8H0V4h1V2h1V1h2z" fill="#1F2740"/><path d="M4 1h4v1h2v2h1v4h-1v2H8v1H4v-1H2V8H1V4h1V2h2z" fill="#D8DEE9"/><path d="M5 5h2v2H5z" fill="#1F2740"/><path d="M3 3h2v1H3zM2 4h1v1H2z" fill="#FFFFFF"/></svg>
           <h3>You bring <small>required</small></h3>
           <ul>
             <li><span><b>Your own copy of the game</b>: the USA GameCube release (GZLE01). European, Japanese and HD versions aren't supported.</span></li>
@@ -409,6 +661,7 @@
           </ul>
         </div>
         <div class="hold ours parchment" data-ground>
+          <svg class="crest" viewBox="0 0 12 11" shape-rendering="crispEdges" aria-hidden="true"><path d="M2 0h8v1h1v1h1v9H0V2h1V1h1z" fill="#1F2740"/><path d="M2 1h8v1h1v1H1V2h1zM1 4h10v4H1zM1 9h10v1H1z" fill="#A45A2F"/><path d="M2 1h8v1H2z" fill="#C77A44"/><path d="M1 3h10v1H1zM1 8h10v1H1z" fill="#FFC83D"/><path d="M4 4h4v4H4z" fill="#1F2740"/><path d="M5 5h2v2H5z" fill="#FFC83D"/></svg>
           <h3>We bring <small>in the download</small></h3>
           <ul>
             <li><span><b>The runtime</b>: graphics, audio and input, built on the Dolphin emulator's hardware code.</span></li>
@@ -423,6 +676,20 @@
   </section>
 
   <section id="faq">
+    <svg class="jelly j1" viewBox="0 0 60 96" aria-hidden="true">
+      <defs><radialGradient id="jelly-pink"><stop offset="0" stop-color="#FFB7E6" stop-opacity="0.45"/><stop offset="1" stop-color="#FFB7E6" stop-opacity="0"/></radialGradient></defs>
+      <circle cx="30" cy="28" r="30" fill="url(#jelly-pink)"/>
+      <path d="M16 40 q-5 12 1 24 t0 26 M25 42 q4 12 -1 22 t2 22 M35 42 q-4 12 1 22 t-2 20 M44 40 q5 12 -1 24 t0 24" fill="none" stroke="#FFC9EE" stroke-opacity="0.55" stroke-width="2" stroke-linecap="round"/>
+      <path d="M8 40 C8 18 20 8 30 8 C40 8 52 18 52 40 C46 36 40 42 30 38 C20 42 14 36 8 40 Z" fill="#FF9AD5" fill-opacity="0.42" stroke="#FFD1F0" stroke-opacity="0.85" stroke-width="2" stroke-linejoin="round"/>
+      <path d="M16 26 C18 18 24 14 30 14" fill="none" stroke="#FFFFFF" stroke-opacity="0.7" stroke-width="2.5" stroke-linecap="round"/>
+    </svg>
+    <svg class="jelly j2" viewBox="0 0 60 96" aria-hidden="true">
+      <defs><radialGradient id="jelly-cyan"><stop offset="0" stop-color="#8FF3E8" stop-opacity="0.4"/><stop offset="1" stop-color="#8FF3E8" stop-opacity="0"/></radialGradient></defs>
+      <circle cx="30" cy="28" r="30" fill="url(#jelly-cyan)"/>
+      <path d="M16 40 q-5 12 1 24 t0 26 M25 42 q4 12 -1 22 t2 22 M35 42 q-4 12 1 22 t-2 20 M44 40 q5 12 -1 24 t0 24" fill="none" stroke="#B8FFF6" stroke-opacity="0.5" stroke-width="2" stroke-linecap="round"/>
+      <path d="M8 40 C8 18 20 8 30 8 C40 8 52 18 52 40 C46 36 40 42 30 38 C20 42 14 36 8 40 Z" fill="#6FE3D6" fill-opacity="0.36" stroke="#C8FFF8" stroke-opacity="0.8" stroke-width="2" stroke-linejoin="round"/>
+      <path d="M16 26 C18 18 24 14 30 14" fill="none" stroke="#FFFFFF" stroke-opacity="0.7" stroke-width="2.5" stroke-linecap="round"/>
+    </svg>
     <div class="wrap">
       <p class="kicker">From the crow's nest</p>
       <h2>Questions</h2>
@@ -461,6 +728,53 @@
 </main>
 
 <footer>
+  <div class="seabed" aria-hidden="true">
+    <svg viewBox="0 0 1440 220" preserveAspectRatio="xMidYMax slice">
+      <defs><linearGradient id="shaft" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFF1C4" stop-opacity="0"/><stop offset="0.45" stop-color="#FFF1C4" stop-opacity="0.04"/><stop offset="1" stop-color="#FFF1C4" stop-opacity="0.16"/></linearGradient></defs>
+      <path d="M0 150 C90 128 170 138 250 126 C330 114 400 140 480 134 C560 128 600 150 700 150 C820 150 900 120 1000 124 C1100 128 1150 110 1240 116 C1320 122 1380 132 1440 128 V220 H0 Z" fill="#082457"/>
+      <g transform="rotate(-2 780 192)">
+        <g fill="#0C2F6B">
+          <path d="M640 138h280v54H640z"/>
+          <path d="M640 130h14v8h-14zm26 0h14v8h-14zm26 0h14v8h-14zm26 0h14v8h-14zm26 0h14v8h-14zm26 0h14v8h-14zm26 0h14v8h-14zm26 0h14v8h-14zm26 0h14v8h-14zm26 0h14v8h-14zm26 0h14v8h-14z"/>
+          <path d="M652 88h44v104h-44z"/><path d="M646 88 L674 46 L702 88 Z"/>
+          <path d="M724 76h112v116H724z"/><path d="M716 76 L780 44 L844 76 Z"/>
+          <path d="M768 26h24v36h-24z"/><path d="M762 28 L780 6 L798 28 Z"/>
+          <path d="M868 96h40v96h-40z"/><path d="M862 96 L888 58 L914 96 Z"/>
+        </g>
+        <path d="M764 192v-22a16 16 0 0 1 32 0v22z" fill="#061C48"/>
+        <g fill="#FFC83D" fill-opacity="0.38">
+          <path d="M744 112v-10a6 6 0 0 1 12 0v10z"/><path d="M774 112v-10a6 6 0 0 1 12 0v10z"/><path d="M804 112v-10a6 6 0 0 1 12 0v10z"/>
+          <path d="M668 116v-8a6 6 0 0 1 12 0v8z"/><path d="M882 122v-8a6 6 0 0 1 12 0v8z"/><path d="M776 38h8v10h-8z"/>
+        </g>
+      </g>
+      <path d="M520 0 H600 L598 204 H546 Z" fill="url(#shaft)"/>
+      <g fill="#06204D">
+        <path d="M50 206 C60 166 112 152 144 172 C164 150 216 156 232 200 Z"/>
+        <path d="M1160 206 C1172 170 1214 150 1254 164 C1286 144 1340 156 1356 204 Z"/>
+      </g>
+      <g fill="#1C6E5A">
+        <g transform="translate(110 208)"><path class="kelp" style="--d:6s;--w:-1s" d="M0 0 C-10 -30 12 -50 0 -80 C-10 -104 8 -120 2 -140 C10 -120 -2 -100 8 -80 C18 -52 -2 -30 8 0 Z"/></g>
+        <g transform="translate(134 208) scale(0.7)"><path class="kelp" style="--d:5s;--w:-3s" d="M0 0 C-10 -30 12 -50 0 -80 C-10 -104 8 -120 2 -140 C10 -120 -2 -100 8 -80 C18 -52 -2 -30 8 0 Z"/></g>
+        <g transform="translate(330 204) scale(0.85)"><path class="kelp" style="--d:7s;--w:-2s" d="M0 0 C-10 -30 12 -50 0 -80 C-10 -104 8 -120 2 -140 C10 -120 -2 -100 8 -80 C18 -52 -2 -30 8 0 Z"/></g>
+        <g transform="translate(618 200) scale(0.55)"><path class="kelp" style="--d:5.5s;--w:-4s" d="M0 0 C-10 -30 12 -50 0 -80 C-10 -104 8 -120 2 -140 C10 -120 -2 -100 8 -80 C18 -52 -2 -30 8 0 Z"/></g>
+        <g transform="translate(936 198) scale(0.8)"><path class="kelp" style="--d:6.5s;--w:-1.5s" d="M0 0 C-10 -30 12 -50 0 -80 C-10 -104 8 -120 2 -140 C10 -120 -2 -100 8 -80 C18 -52 -2 -30 8 0 Z"/></g>
+        <g transform="translate(958 200) scale(0.55)"><path class="kelp" style="--d:5s;--w:-2.5s" d="M0 0 C-10 -30 12 -50 0 -80 C-10 -104 8 -120 2 -140 C10 -120 -2 -100 8 -80 C18 -52 -2 -30 8 0 Z"/></g>
+        <g transform="translate(1210 206) scale(1.05)"><path class="kelp" style="--d:7.5s;--w:-3s" d="M0 0 C-10 -30 12 -50 0 -80 C-10 -104 8 -120 2 -140 C10 -120 -2 -100 8 -80 C18 -52 -2 -30 8 0 Z"/></g>
+        <g transform="translate(1300 208) scale(0.72)"><path class="kelp" style="--d:6s;--w:-5s" d="M0 0 C-10 -30 12 -50 0 -80 C-10 -104 8 -120 2 -140 C10 -120 -2 -100 8 -80 C18 -52 -2 -30 8 0 Z"/></g>
+      </g>
+      <g transform="translate(552 172) rotate(-8)" stroke="#1F2740" stroke-width="2.5" stroke-linejoin="round">
+        <path d="M0 10 H40 V32 H0 Z" fill="#8A4B22"/>
+        <path d="M0 10 V5 Q20 -5 40 5 V10 Z" fill="#A45A2F"/>
+        <path d="M0 10 H40 V14 H0 Z" fill="#FFC83D" stroke-width="2"/>
+        <path d="M17 12 H23 V21 H17 Z" fill="#FFC83D" stroke-width="1.8"/>
+      </g>
+      <path d="M0 196 C160 184 300 204 480 194 C640 184 760 200 900 192 C1060 184 1200 200 1440 188 V220 H0 Z" fill="#1B3A78"/>
+      <path d="M0 196 C160 184 300 204 480 194 C640 184 760 200 900 192 C1060 184 1200 200 1440 188" fill="none" stroke="#2C55A0" stroke-width="3"/>
+      <g fill="#2A4C90"><ellipse cx="260" cy="206" rx="7" ry="3"/><ellipse cx="700" cy="206" rx="5" ry="2.5"/><ellipse cx="1040" cy="204" rx="8" ry="3"/><ellipse cx="1390" cy="200" rx="6" ry="2.5"/></g>
+      <path class="glint" d="M594 166 l2 6 6 2 -6 2 -2 6 -2 -6 -6 -2 6 -2 z" fill="#FFF6C8"/>
+    </svg>
+  </div>
+  <div class="bubbles" aria-hidden="true"><i style="--x:39%;--s:7px;--d:10s;--w:-2s"></i><i style="--x:41%;--s:5px;--d:8s;--w:-5s"></i><i style="--x:12%;--s:9px;--d:14s;--w:-9s"></i><i style="--x:84%;--s:8px;--d:12s;--w:-4s"></i></div>
   <div class="wrap">
     <div class="foot">
       <div>
@@ -493,6 +807,7 @@
 <canvas id="deckhand" width="120" height="150" aria-hidden="true"></canvas>
 <button id="deckhand-hit" type="button" aria-label="The deckhand. Click to say hello; then use the arrow keys to run and jump."></button>
 <div class="bubble" id="bubble" role="status" aria-live="polite"></div>
+<div class="gauge" id="gauge" aria-hidden="true"><div class="gauge-mark" id="gauge-mark"><span id="depth">0</span>&nbsp;m</div></div>
 
 <script>
 (() => {
@@ -525,6 +840,83 @@
     // the sea starts below the words, so they always sit on open sky
     const copyBottom = copy.getBoundingClientRect().bottom - hero.getBoundingClientRect().top;
     HORIZON = Math.max(H * 0.5, copyBottom + 36);
+    buildIsles();
+  }
+
+  /* distant islands on the horizon, painted once per resize and hazed by distance */
+  let isles = null, islesH = 0;
+  function curl(c, cx, cy, k, dir) {
+    c.beginPath();
+    for (let t = 0; t <= Math.PI * 2.4; t += 0.15) {
+      const r = (1.5 + t * 2.6) * k, px = cx + dir * Math.cos(t) * r, py = cy + Math.sin(t) * r;
+      t === 0 ? c.moveTo(px, py) : c.lineTo(px, py);
+    }
+    c.stroke();
+  }
+  function palmTree(c, x, y, h, lean) {
+    const tx = x + lean * h, ty = y - h;
+    c.strokeStyle = "#A2917F"; c.lineWidth = Math.max(1.6, h * 0.09);
+    c.beginPath(); c.moveTo(x, y); c.quadraticCurveTo(x + lean * h * 0.15, y - h * 0.6, tx, ty); c.stroke();
+    c.strokeStyle = "#6BB287"; c.lineWidth = Math.max(1.8, h * 0.1);
+    for (const [ax, ay] of [[-1, 0.4], [-0.75, -0.3], [0.05, -0.55], [0.75, -0.3], [1, 0.42]]) {
+      c.beginPath(); c.moveTo(tx, ty);
+      c.quadraticCurveTo(tx + ax * h * 0.3, ty + ay * h * 0.3 - h * 0.14, tx + ax * h * 0.5, ty + ay * h * 0.45 + h * 0.06);
+      c.stroke();
+    }
+  }
+  function buildIsles() {
+    const s = Math.max(0.5, Math.min(1, W / 1300)), wide = W >= 700;
+    islesH = Math.ceil(170 * s);
+    isles = document.createElement("canvas");
+    isles.width = Math.max(1, Math.round(W * DPR)); isles.height = Math.max(1, Math.round(islesH * DPR));
+    const c = isles.getContext("2d");
+    c.setTransform(DPR, 0, 0, DPR, 0, 0);
+    c.lineCap = "round"; c.lineJoin = "round";
+    const b = islesH - 3;                       // waterline
+    const foam = (x, w) => { c.fillStyle = "rgba(255,255,255,0.9)"; c.fillRect(x, b - 1.5, w, 2.5); };
+
+    if (wide) {
+      // a tall rock with a ring of cloud around its peak
+      const x = W * 0.9;
+      c.strokeStyle = "rgba(255,255,255,0.7)"; c.lineWidth = 4 * s;
+      c.beginPath(); c.ellipse(x - 4 * s, b - 114 * s, 54 * s, 11 * s, -0.08, Math.PI + 0.2, Math.PI * 2 - 0.2); c.stroke();
+      const rock = [[-86, 0], [-62, -34], [-48, -50], [-34, -104], [-14, -134], [6, -128], [24, -94], [36, -58], [60, -34], [90, 0]];
+      c.beginPath(); rock.forEach(([dx, dy], i) => i ? c.lineTo(x + dx * s, b + dy * s) : c.moveTo(x + dx * s, b + dy * s)); c.closePath();
+      c.fillStyle = "#8DB0DC"; c.fill();
+      c.save(); c.clip();
+      c.fillStyle = "#7598CD";
+      c.beginPath(); c.moveTo(x - 6 * s, b - 140 * s); c.lineTo(x + 110 * s, b - 140 * s); c.lineTo(x + 110 * s, b); c.lineTo(x + 14 * s, b); c.lineTo(x + 2 * s, b - 64 * s); c.closePath(); c.fill();
+      c.fillStyle = "#94CFA6"; c.beginPath(); c.ellipse(x - 34 * s, b + 6 * s, 74 * s, 28 * s, 0, 0, Math.PI * 2); c.fill();
+      c.restore();
+      c.strokeStyle = "#FFFFFF"; c.lineWidth = 6 * s;
+      c.beginPath(); c.ellipse(x - 4 * s, b - 114 * s, 54 * s, 11 * s, -0.08, 0.15, Math.PI - 0.15); c.stroke();
+      c.lineWidth = 3.4 * s; curl(c, x + 50 * s, b - 118 * s, s, 1);
+      foam(x - 70 * s, 26 * s); foam(x + 30 * s, 34 * s);
+
+      // a small islet with a single palm
+      const ix = W * 0.775;
+      c.fillStyle = "#93CCA3"; c.beginPath(); c.moveTo(ix - 30 * s, b); c.quadraticCurveTo(ix, b - 22 * s, ix + 34 * s, b); c.closePath(); c.fill();
+      palmTree(c, ix + 2 * s, b - 12 * s, 30 * s, 0.22);
+      foam(ix - 26 * s, 18 * s);
+    }
+
+    // a low green island with palms and a lookout hut
+    const lx = wide ? W * 0.6 : W * 0.3, ls = wide ? s : s * 0.9;
+    c.fillStyle = "#F4E7BF"; c.beginPath(); c.ellipse(lx, b, 86 * ls, 10 * ls, 0, Math.PI, 0); c.fill();
+    c.fillStyle = "#8FCB9F";
+    c.beginPath(); c.moveTo(lx - 70 * ls, b - 4 * ls); c.bezierCurveTo(lx - 48 * ls, b - 36 * ls, lx + 40 * ls, b - 40 * ls, lx + 74 * ls, b - 4 * ls); c.closePath(); c.fill();
+    c.fillStyle = "#ECDDBE"; c.fillRect(lx + 8 * ls, b - 42 * ls, 20 * ls, 14 * ls);
+    c.fillStyle = "#CF9274"; c.beginPath(); c.moveTo(lx + 3 * ls, b - 41 * ls); c.lineTo(lx + 18 * ls, b - 54 * ls); c.lineTo(lx + 33 * ls, b - 41 * ls); c.closePath(); c.fill();
+    palmTree(c, lx - 34 * ls, b - 20 * ls, 34 * ls, -0.28);
+    palmTree(c, lx - 16 * ls, b - 26 * ls, 42 * ls, 0.1);
+    foam(lx - 80 * ls, 30 * ls); foam(lx + 30 * ls, 40 * ls);
+
+    // haze: the further away, the more of the sky's colour
+    c.globalCompositeOperation = "source-atop";
+    const hz = c.createLinearGradient(0, 0, 0, b);
+    hz.addColorStop(0, "rgba(214,238,255,0.4)"); hz.addColorStop(1, "rgba(214,238,255,0.12)");
+    c.fillStyle = hz; c.fillRect(0, 0, W, islesH);
+    c.globalCompositeOperation = "source-over";
   }
 
   const clouds = [
@@ -587,6 +979,7 @@
 
     // open water behind the swells
     sx.fillStyle = "#5FAAF0"; sx.fillRect(0, horizon, W, H - horizon);
+    if (isles) sx.drawImage(isles, 0, horizon - islesH + 3, W, islesH);
     sx.fillStyle = "rgba(255,255,255,0.9)";
     for (let i = 0; i < 9; i++) {               // glints under the sun
       const gx = sunX + Math.sin(t * 0.7 + i * 2.1) * (30 + i * 9) - 20;
@@ -595,6 +988,7 @@
     }
     // swells, back to front, each with a broken foam crest
     for (let i = 0; i < BANDS.length; i++) {
+      if (i === 1) drawLeaper(t);     // before this swell fills, so it hides the fish below the surface
       sx.beginPath(); sx.moveTo(0, H);
       for (let x = 0; x <= W + 8; x += 8) sx.lineTo(x, bandY(i, x, t));
       sx.lineTo(W, H); sx.closePath();
@@ -606,7 +1000,57 @@
       sx.lineDashOffset = -t * (18 + 30 * k) - i * 57;
       sx.strokeStyle = "rgba(255,255,255,0.92)"; sx.lineWidth = 1.6 + 2.6 * k; sx.lineCap = "round";
       sx.stroke(); sx.setLineDash([]);
+      if (i === 1) drawSplash(t);
       if (i === 2) drawBoat(t);
+    }
+  }
+
+  // now and then a fish leaps out of a swell and splashes back in
+  const LEAP_SPAN = 110, LEAP_HIGH = 62;
+  const leap = { u: -1, x: 0, dir: 1, wait: 2.5 };
+  function stepLeap(dt) {
+    if (leap.u < 0) {
+      leap.wait -= dt;
+      if (leap.wait > 0) return;
+      leap.u = 0;
+      leap.x = W * (0.12 + Math.random() * 0.42);
+      leap.dir = Math.random() < 0.5 ? -1 : 1;
+      if (leap.x + leap.dir * LEAP_SPAN > W * 0.6) leap.dir = -1;   // keep clear of the boat
+      if (leap.x + leap.dir * LEAP_SPAN < 10) leap.dir = 1;
+      return;
+    }
+    leap.u += dt / 1.2;
+    if (leap.u > 1.3) { leap.u = -1; leap.wait = 4 + Math.random() * 6; }
+  }
+  function drawLeaper(t) {
+    const u = leap.u;
+    if (u < 0 || u > 1) return;
+    const x = leap.x + leap.dir * LEAP_SPAN * u;
+    const y = bandY(1, x, t) + 12 - Math.sin(u * Math.PI) * LEAP_HIGH;
+    const ang = Math.atan2(-Math.cos(u * Math.PI) * LEAP_HIGH * Math.PI, leap.dir * LEAP_SPAN);
+    sx.save(); sx.translate(x, y); sx.rotate(ang); if (leap.dir < 0) sx.scale(1, -1);
+    sx.lineJoin = "round"; sx.lineWidth = 2.4; sx.strokeStyle = "#1F2740";
+    sx.beginPath(); sx.moveTo(-11, 0); sx.lineTo(-23, -8); sx.lineTo(-19, 0); sx.lineTo(-23, 8); sx.closePath();
+    sx.fillStyle = "#FF9A3C"; sx.fill(); sx.stroke();
+    sx.beginPath(); sx.moveTo(-3, -6); sx.lineTo(3, -11); sx.lineTo(6, -6); sx.closePath(); sx.fill(); sx.stroke();
+    sx.beginPath(); sx.ellipse(0, 0, 15, 7, 0, 0, Math.PI * 2); sx.fillStyle = "#FFB255"; sx.fill(); sx.stroke();
+    sx.fillStyle = "#FFE7BD"; sx.beginPath(); sx.ellipse(1, 2.8, 9.5, 2.4, 0, 0, Math.PI * 2); sx.fill();
+    sx.fillStyle = "#1F2740"; sx.beginPath(); sx.arc(8.5, -2, 1.9, 0, Math.PI * 2); sx.fill();
+    sx.restore();
+  }
+  function drawSplash(t) {
+    if (leap.u < 0) return;
+    for (const [px, u0] of [[leap.x, 0], [leap.x + leap.dir * LEAP_SPAN, 0.88]]) {
+      const k = (leap.u - u0) / 0.4;
+      if (k < 0 || k > 1) continue;
+      const py = bandY(1, px, t) + 2, a = 1 - k;
+      sx.fillStyle = `rgba(255,255,255,${0.95 * a})`;
+      for (let i = 0; i < 5; i++) {
+        const th = -Math.PI * (0.18 + i * 0.16), r = 6 + k * 20;
+        sx.beginPath(); sx.arc(px + Math.cos(th) * r, py + Math.sin(th) * r * 1.1 + k * k * 18, 3.2 * a + 1, 0, Math.PI * 2); sx.fill();
+      }
+      sx.strokeStyle = `rgba(255,255,255,${0.9 * a})`; sx.lineWidth = 2;
+      sx.beginPath(); sx.ellipse(px, py + 3, 8 + k * 22, 2 + k * 4, 0, 0, Math.PI * 2); sx.stroke();
     }
   }
 
@@ -678,6 +1122,7 @@
   let seaT = 0, trailClock = 1.2;
   function renderSea(dt) {
     seaT += dt;
+    stepLeap(dt);
     sx.clearRect(0, 0, W, H);
     drawSea(seaT);
     trailClock -= dt; if (trailClock <= 0) { spawnTrail(); trailClock = 2.6 + Math.random() * 2.4; }
@@ -961,6 +1406,20 @@
   });
   document.addEventListener("pointerdown", e => { if (e.target !== hit) { control = false; } });
 
+  /* ================= depth gauge ================= */
+  const gauge = document.getElementById("gauge"), gaugeMark = document.getElementById("gauge-mark"), depthEl = document.getElementById("depth");
+  let gaugeSY = -1;
+  function updateGauge() {
+    const sy = window.scrollY;
+    if (sy === gaugeSY) return;
+    gaugeSY = sy;
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    const p = max > 0 ? Math.min(1, Math.max(0, sy / max)) : 0;
+    gaugeMark.style.transform = `translateY(${Math.round(p * gauge.clientHeight)}px)`;
+    depthEl.textContent = Math.round(p * 1000);
+    gauge.classList.toggle("on", sy > hero.offsetHeight * 0.5);
+  }
+
   /* ================= main loop ================= */
   let last = performance.now(), measureClock = 0;
   function loop(now) {
@@ -983,6 +1442,7 @@
     if (bubbleT > 0) { bubbleT -= dt; if (bubbleT <= 0) bubble.classList.remove("on"); }
     drawKid(dt);
     position();
+    updateGauge();
     requestAnimationFrame(loop);
   }
 
@@ -990,7 +1450,7 @@
     sizeSea(); sizeKid(); place();
     if (reduceMotion) renderSea(0.016);
     new IntersectionObserver(es => { heroVisible = es[0].isIntersecting; }).observe(hero);
-    window.addEventListener("resize", () => { sizeSea(); measure(); if (reduceMotion) renderSea(0.016); });
+    window.addEventListener("resize", () => { sizeSea(); measure(); gaugeSY = -1; if (reduceMotion) renderSea(0.016); });
     setTimeout(() => say(LINES[lineIx++], 3.6), 1400);
     requestAnimationFrame(loop);
   }
