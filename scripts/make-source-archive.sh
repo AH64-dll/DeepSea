@@ -9,7 +9,8 @@
 #
 # Excluded: Externals/Qt and Externals/FFmpeg-bin, prebuilt binary
 # packages that the Windows mingw build does not use (ENABLE_QT=OFF,
-# ENCODE_FRAMEDUMPS=OFF). Game code and data are never part of the tree.
+# ENCODE_FRAMEDUMPS=OFF), and Externals/mGBA/mgba (USE_MGBA=OFF), whose
+# emulator test suite carries save files from commercial games. Game code and data are never part of the tree.
 #
 # Usage:
 #   scripts/make-source-archive.sh --out <file.tar.gz> [--allow-dirty]
@@ -22,7 +23,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MG_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT=""
 ALLOW_DIRTY=0
-EXCLUDE_RE='^vendor/dolphin/Externals/(Qt|FFmpeg-bin)$'
+EXCLUDE_RE='^vendor/dolphin/Externals/(Qt|FFmpeg-bin|mGBA/mgba)$'
 
 die() { echo "make-source-archive: ERROR: $*" >&2; exit 1; }
 
@@ -102,7 +103,7 @@ generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 Build: see README.md and docs/ in this tree. The Windows release is built with
 llvm-mingw (clang) via CMake + Ninja. Excluded as unused by that build:
-vendor/dolphin/Externals/Qt, vendor/dolphin/Externals/FFmpeg-bin.
+vendor/dolphin/Externals/Qt, vendor/dolphin/Externals/FFmpeg-bin, vendor/dolphin/Externals/mGBA/mgba.
 EOF
 
 tar -C "$stage" -cf "$stage/part-manifest.tar" "$prefix/SOURCE-MANIFEST.txt"
