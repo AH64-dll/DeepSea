@@ -3323,5 +3323,237 @@ int main(void)
 #undef TA_SET_GDL
     }
 
+    /* ==== Wave2 cloth: dCloth_packet_c draw-hook lerp + index flip ====
+     * Fabricate a 2x2 cloth packet (n=4): slot0 = current pose (T_c),
+     * slot1 = previous pose (T_{c-1}). The R-frame entry must lerp the
+     * STALE slot in place and flip mCurArr; the return must restore it. */
+    {
+        const uint32_t pkt  = 0x80140000u;
+        const uint32_t pos0 = 0x80141000u, pos1 = 0x80142000u;
+        const uint32_t nrm0 = 0x80143000u, nrm1 = 0x80144000u;
+        const uint32_t bck0 = 0x80145000u, bck1 = 0x80146000u;
+        memset(&s_memory[pkt - 0x80000000u], 0, 0x100u);
+        store_be32(&s_memory[pkt + DCLOTH_OFF_FLY   - 0x80000000u], 2u);
+        store_be32(&s_memory[pkt + DCLOTH_OFF_HOIST - 0x80000000u], 2u);
+        store_be32(&s_memory[pkt + DCLOTH_OFF_POS + 0u - 0x80000000u], pos0);
+        store_be32(&s_memory[pkt + DCLOTH_OFF_POS + 4u - 0x80000000u], pos1);
+        store_be32(&s_memory[pkt + DCLOTH_OFF_NRM + 0u - 0x80000000u], nrm0);
+        store_be32(&s_memory[pkt + DCLOTH_OFF_NRM + 4u - 0x80000000u], nrm1);
+        store_be32(&s_memory[pkt + DCLOTH_OFF_BCK + 0u - 0x80000000u], bck0);
+        store_be32(&s_memory[pkt + DCLOTH_OFF_BCK + 4u - 0x80000000u], bck1);
+        s_memory[pkt + DCLOTH_OFF_CUR - 0x80000000u] = 0u;
+        /* positions: prev = 2+i, cur = 10+i -> lerp(0.5) = 6+i */
+        for (uint32_t i = 0; i < 12u; ++i) {
+            store_f32(&s_memory[pos1 - 0x80000000u + i * 4u], 2.0f + (float)i);
+            store_f32(&s_memory[pos0 - 0x80000000u + i * 4u], 10.0f + (float)i);
+        }
+        /* normals: prev = +X (1,0,0), cur = +Z (0,0,1) -> lerp renormalizes
+         * to (0.7071,0,0.7071); backs same */
+        for (uint32_t v = 0; v < 4u; ++v) {
+            store_f32(&s_memory[nrm1 - 0x80000000u + v * 12u + 0u], 1.0f);
+            store_f32(&s_memory[nrm0 - 0x80000000u + v * 12u + 8u], 1.0f);
+            store_f32(&s_memory[bck1 - 0x80000000u + v * 12u + 0u], -1.0f);
+            store_f32(&s_memory[bck0 - 0x80000000u + v * 12u + 8u], -1.0f);
+        }
+        s_split_mode = 1u; s_rframe_render = 1u; s_j3d_interp = 1u;
+        s_logic_this_frame = 0u; s_r_dup = 0u; s_noinject = 0u;
+        s_fol_cut = 0u; s_interp_alpha = 0.5f; s_cloth_interp = 1u;
+        s_cloth_dol_armed = 0u; s_cloth_seen_n = 0u;
+        state.gpr[3] = pkt;
+        on_cloth_draw_entry(&state);
+        /* mCurArr flipped to 1, pos1 lerped elementwise (6+i) */
+        if (s_memory[pkt + DCLOTH_OFF_CUR - 0x80000000u] != 1u)
+            return 500;
+        if (be_f32(&s_memory[pos1 - 0x80000000u + 0u]) != 6.0f ||
+            be_f32(&s_memory[pos1 - 0x80000000u + 4u]) != 7.0f)
+            return 501;
+        /* normal lerped then renormalized to unit length */
+        {
+            union { uint32_t u; float f; } nx, nz;
+            nx.u = load_be32(&s_memory[nrm1 - 0x80000000u + 0u]);
+            nz.u = load_be32(&s_memory[nrm1 - 0x80000000u + 8u]);
+            if (nx.f < 0.706f || nx.f > 0.708f ||
+                nz.f < 0.706f || nz.f > 0.708f)
+                return 502;
+            nx.u = load_be32(&s_memory[bck1 - 0x80000000u + 0u]);
+            if (nx.f < -0.708f || nx.f > -0.706f)
+                return 503;
+        }
+        on_cloth_draw_return(&state);
+        if (s_memory[pkt + DCLOTH_OFF_CUR - 0x80000000u] != 0u)
+            return 504;
+        /* Second draw of the same packet in the SAME Painter (multi-window):
+         * de-dup keeps the lerped buffer — flip publishes it again, no
+         * re-lerp. Buffer content must still be the first lerp. */
+        on_cloth_draw_entry(&state);
+        if (s_memory[pkt + DCLOTH_OFF_CUR - 0x80000000u] != 1u)
+            return 505;
+        if (be_f32(&s_memory[pos1 - 0x80000000u + 0u]) != 6.0f)
+            return 506;
+        on_cloth_draw_return(&state);
+        if (s_memory[pkt + DCLOTH_OFF_CUR - 0x80000000u] != 0u)
+            return 507;
+        /* Leaked arm safety: if the return hook misfires, the next
+         * Painter-entry restores mCurArr via cloth_painter_entry. */
+        on_cloth_draw_entry(&state);
+        if (!s_cloth_dol_armed) return 508;
+        s_cloth_dol_armed = 1u;   /* simulate the missed return */
+        cloth_painter_entry(&state);
+        if (s_cloth_dol_armed ||
+            s_memory[pkt + DCLOTH_OFF_CUR - 0x80000000u] != 0u)
+            return 509;
+        /* Warp guard: a >50-unit jump between endpoints -> no flip, no lerp */
+        store_f32(&s_memory[pos0 - 0x80000000u + 0u], 10.0f + 500.0f);
+        on_cloth_draw_entry(&state);
+        if (s_memory[pkt + DCLOTH_OFF_CUR - 0x80000000u] != 0u)
+            return 510;
+        store_f32(&s_memory[pos0 - 0x80000000u + 0u], 10.0f);   /* restore */
+        /* L-frame: the hook is a no-op */
+        s_logic_this_frame = 1u;
+        on_cloth_draw_entry(&state);
+        if (s_memory[pkt + DCLOTH_OFF_CUR - 0x80000000u] != 0u)
+            return 511;
+        s_logic_this_frame = 0u;
+        /* Kill switch: nothing happens at all */
+        s_cloth_interp = 0u;
+        on_cloth_draw_entry(&state);
+        if (s_memory[pkt + DCLOTH_OFF_CUR - 0x80000000u] != 0u ||
+            s_cloth_dol_armed)
+            return 512;
+        s_cloth_interp = 1u;
+    }
+
+    /* ==== Wave2 cloth: rel sail packet — L snapshot -> R lerp+flip -> restore ====
+     * Exercises cloth_painter_entry/cloth_rframe end-to-end through the
+     * DynamicModuleControl walk + dDlst_list_c draw-buffer scan. daSail is
+     * single-buffered: slot1 is the mod's prev-pose scratch. */
+    {
+        const uint32_t node = 0x80200000u, mod = 0x80210000u;
+        const uint32_t name_ea = 0x80200080u, tbl = 0x80210100u;
+        const uint32_t rel_data = 0x80300000u;
+        const uint32_t dbuf = 0x80220000u, buf = 0x80221000u;
+        const uint32_t sail = 0x80160000u;
+        const ClothSpec* sp = &s_cloth_specs[0];   /* d_a_sail */
+        memset(&s_memory[node - 0x80000000u], 0, 0x2000u);
+        memset(&s_memory[dbuf - 0x80000000u], 0, 0x2000u);
+        memset(&s_memory[sail - 0x80000000u], 0, sp->span);
+        /* DMC list: mFirst -> node {link=1, mNext=0, mModule=mod, mName} */
+        store_be32(&s_memory[DMC_FIRST_EA - 0x80000000u], node);
+        store_be16(&s_memory[node + DMC_OFF_LINKCNT - 0x80000000u], 1u);
+        store_be32(&s_memory[node + DMC_OFF_MODULE  - 0x80000000u], mod);
+        store_be32(&s_memory[node + DMC_OFF_NAME    - 0x80000000u], name_ea);
+        memcpy(&s_memory[name_ea - 0x80000000u], "d_a_sail", 9u);
+        /* module -> sectionInfoTbl -> sec5 (.data) = rel_data, size 0x4000 */
+        store_be32(&s_memory[mod + OSM_OFF_SECTBL - 0x80000000u], tbl);
+        store_be32(&s_memory[tbl + CLOTH_SEC_DATA * 8u     - 0x80000000u], rel_data);
+        store_be32(&s_memory[tbl + CLOTH_SEC_DATA * 8u + 4u - 0x80000000u], 0x4000u);
+        /* packet: vtable = rel_data + 0x1434 -> classifies as sail */
+        store_be32(&s_memory[sail - 0x80000000u], rel_data + 0x1434u);
+        s_memory[sail + sp->idx_off - 0x80000000u] = 0u;
+        /* dDlst_list_c buf slot 0: mpBuf=buf, mBufSize=2, entry0 = sail */
+        store_be32(&s_memory[DDLST_EA - 0x80000000u], dbuf);
+        store_be32(&s_memory[dbuf + J3DDB_OFF_BUF   - 0x80000000u], buf);
+        store_be32(&s_memory[dbuf + J3DDB_OFF_BUFSZ - 0x80000000u], 2u);
+        store_be32(&s_memory[buf - 0x80000000u], sail);
+        /* slot0 pos = prev pose 4+i ; slot1 zeroed */
+        for (uint32_t i = 0; i < sp->n * 3u; ++i)
+            store_f32(&s_memory[sail + sp->pos_off - 0x80000000u + i * 4u],
+                      4.0f + (float)i);
+        /* L-entry: snapshot slot0 -> slot1 (prev endpoint preserved) */
+        s_logic_this_frame = 1u;
+        cloth_painter_entry(&state);
+        if (be_f32(&s_memory[sail + sp->pos_off + sp->stride - 0x80000000u + 0u]) != 4.0f ||
+            be_f32(&s_memory[sail + sp->pos_off + sp->stride - 0x80000000u + 4u]) != 5.0f)
+            return 513;
+        /* execute overwrites slot0 with the new pose 8+i */
+        for (uint32_t i = 0; i < sp->n * 3u; ++i)
+            store_f32(&s_memory[sail + sp->pos_off - 0x80000000u + i * 4u],
+                      8.0f + (float)i);
+        /* R-entry: lerp slot1 -> (4+i + 8+i)/2 = 6+i, m1C3A -> 1 */
+        s_logic_this_frame = 0u;
+        cloth_painter_entry(&state);
+        cloth_rframe(&state, 0.5f);
+        if (s_memory[sail + sp->idx_off - 0x80000000u] != 1u)
+            return 514;
+        if (be_f32(&s_memory[sail + sp->pos_off + sp->stride - 0x80000000u + 0u]) != 6.0f ||
+            be_f32(&s_memory[sail + sp->pos_off + sp->stride - 0x80000000u + 4u]) != 7.0f)
+            return 515;
+        if (s_cloth_nflips != 1u)
+            return 516;
+        /* slot0 must be untouched (current pose preserved for sim) */
+        if (be_f32(&s_memory[sail + sp->pos_off - 0x80000000u + 0u]) != 8.0f)
+            return 517;
+        /* Next entry (any class) restores the index before the next execute */
+        s_logic_this_frame = 1u;
+        cloth_painter_entry(&state);
+        if (s_memory[sail + sp->idx_off - 0x80000000u] != 0u || s_cloth_nflips)
+            return 518;
+        /* Module unloaded (mModule=0): the R walk must not classify/flip. */
+        s_memory[sail + sp->idx_off - 0x80000000u] = 0u;
+        store_be32(&s_memory[node + DMC_OFF_MODULE - 0x80000000u], 0u);
+        s_logic_this_frame = 0u;
+        cloth_rframe(&state, 0.5f);
+        if (s_memory[sail + sp->idx_off - 0x80000000u] != 0u)
+            return 519;
+        s_logic_this_frame = 1u;
+        memset(&s_memory[DMC_FIRST_EA - 0x80000000u], 0, 4u);
+    }
+
+    /* ==== Wave2 cloth: rel sectionInfoOffset / section .offset stored as
+     * image-relative offsets =================================================
+     * This port's rel_loader leaves OSModuleInfo::sectionInfoOffset (and the
+     * OSSectionInfo .offset fields) as raw file offsets instead of patching
+     * them to absolute addresses like stock OSLink. Resolve must translate
+     * both encodings (observed at runtime: sectionInfoOffset == 0x4C). */
+    {
+        const uint32_t node = 0x80200000u, mod = 0x80210000u;
+        const uint32_t name_ea = 0x80200080u;
+        const uint32_t tbl_off = 0x100u;          /* tbl lands at mod+0x100 */
+        const uint32_t data_off = 0x0F0000u;      /* .data at mod+0xF0000   */
+        const uint32_t tbl = mod + tbl_off;
+        memset(&s_memory[node - 0x80000000u], 0, 0x2000u);
+        store_be32(&s_memory[DMC_FIRST_EA - 0x80000000u], node);
+        store_be16(&s_memory[node + DMC_OFF_LINKCNT - 0x80000000u], 1u);
+        store_be32(&s_memory[node + DMC_OFF_MODULE  - 0x80000000u], mod);
+        store_be32(&s_memory[node + DMC_OFF_NAME    - 0x80000000u], name_ea);
+        memcpy(&s_memory[name_ea - 0x80000000u], "d_a_sail", 9u);
+        store_be32(&s_memory[mod + OSM_OFF_SECTBL - 0x80000000u], tbl_off);
+        store_be32(&s_memory[tbl + CLOTH_SEC_DATA * 8u     - 0x80000000u], data_off);
+        store_be32(&s_memory[tbl + CLOTH_SEC_DATA * 8u + 4u - 0x80000000u], 0x4000u);
+        {
+            uint32_t bases[CLOTH_NSPEC];
+            memset(bases, 0, sizeof(bases));
+            cloth_resolve_bases(&state, bases, CLOTH_NSPEC);
+            if (bases[0] != mod + data_off)
+                return 520;
+        }
+        memset(&s_memory[DMC_FIRST_EA - 0x80000000u], 0, 4u);
+    }
+
+    /* ==== Wave2 cloth: warp guard on rel path (teleport -> plain repaint) ==== */
+    {
+        const ClothSpec* sp = &s_cloth_specs[1];   /* d_a_goal_flag */
+        const uint32_t pkt = 0x80170000u;
+        memset(&s_memory[pkt - 0x80000000u], 0, sp->span);
+        s_memory[pkt + sp->idx_off - 0x80000000u] = 0u;
+        /* slot1 (dst) holds a sane prev pose; slot0 (cur) warped +600 on v0 */
+        for (uint32_t i = 0; i < sp->n * 3u; ++i) {
+            store_f32(&s_memory[pkt + sp->pos_off + sp->stride - 0x80000000u + i * 4u], 1.0f);
+            store_f32(&s_memory[pkt + sp->pos_off - 0x80000000u + i * 4u], 2.0f);
+        }
+        store_f32(&s_memory[pkt + sp->pos_off - 0x80000000u + 0u], 602.0f);
+        cloth_visit_packet(&state, pkt, 1, 1, 0.5f);
+        if (s_memory[pkt + sp->idx_off - 0x80000000u] != 0u)
+            return 520;
+        /* Same endpoints but small delta -> lerps and flips */
+        store_f32(&s_memory[pkt + sp->pos_off - 0x80000000u + 0u], 2.0f);
+        cloth_visit_packet(&state, pkt, 1, 1, 0.5f);
+        if (s_memory[pkt + sp->idx_off - 0x80000000u] != 1u)
+            return 521;
+        if (be_f32(&s_memory[pkt + sp->pos_off + sp->stride - 0x80000000u + 0u]) != 1.5f)
+            return 522;
+        s_cloth_nflips = 0u;
+    }
+
     return 0;
 }
