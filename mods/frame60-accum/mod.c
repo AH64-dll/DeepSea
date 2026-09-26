@@ -254,6 +254,11 @@ static uint64_t s_c_snap_ns = 0, s_c_snap_n = 0;  /* j3d_snapshot_pose  (L) */
 static uint64_t s_c_refr_ns = 0, s_c_refr_n = 0;  /* j3d_rframe_refresh (R) */
 static uint64_t s_c_inj_ns  = 0, s_c_inj_n  = 0;  /* j3d_rframe_inject  (R) */
 static uint64_t s_c_frep_ns = 0, s_c_frep_n = 0;  /* fifo_replay_frame  (R) */
+static uint64_t s_c_jpa_ns  = 0, s_c_jpa_n  = 0;  /* jpa_lframe + jpa_rframe  */
+static uint64_t s_c_cam_ns  = 0, s_c_cam_n  = 0;  /* camview L + R frame work */
+static uint64_t s_c_fol_ns  = 0, s_c_fol_n  = 0;  /* foliage entry + return   */
+static uint64_t s_c_lit_ns  = 0, s_c_lit_n  = 0;  /* dKy_setLight relight     */
+static uint64_t s_hook_calls = 0, s_hook_calls_w = 0; /* mod hook invocations */
 
 /* Forward: env/config reader — runs at mod load, before guest starts. */
 static void frame60_accum_on_load(const ModernGekkoModHostApi* api)
@@ -831,6 +836,7 @@ static uint32_t vi_lock_pad(CPUState* state)
 
 static void on_wait_for_tick(CPUState* state)
 {
+    ++s_hook_calls;
     if (s_debug) {
         static uint32_t wft_n = 0;
         if (++wft_n <= 40 || (wft_n & 0x3FFu) == 0)
@@ -889,6 +895,7 @@ static void on_wait_for_tick(CPUState* state)
  * (entry hook persists) so `pc = lr` actually skips the update. */
 static void on_execute_gate(CPUState* state)
 {
+    ++s_hook_calls;
     if (s_enabled && s_split_mode && !s_logic_this_frame)
         state->pc = state->lr;
 }
@@ -897,6 +904,7 @@ static void on_execute_gate(CPUState* state)
  * Same R-frame skip; keeps managers at retail 30 Hz cadence. */
 static void on_after_gate(CPUState* state)
 {
+    ++s_hook_calls;
     if (s_enabled && s_split_mode && !s_logic_this_frame)
         state->pc = state->lr;
 }
@@ -906,6 +914,7 @@ static void on_after_gate(CPUState* state)
  * when MODERNGEKKO_FRAME60_ACCUM=1. Latent under default passthrough. */
 static void on_aud_gate(CPUState* state)
 {
+    ++s_hook_calls;
     if (s_enabled && s_split_mode && !s_logic_this_frame)
         state->pc = state->lr;
 }
@@ -915,12 +924,14 @@ static void on_aud_gate(CPUState* state)
  * (would double-poll and miss triggers). Latent under default passthrough. */
 static void on_cpad_gate(CPUState* state)
 {
+    ++s_hook_calls;
     if (s_enabled && s_split_mode && !s_logic_this_frame)
         state->pc = state->lr;
 }
 
 static void on_void_logic_gate(CPUState* state)
 {
+    ++s_hook_calls;
     if (s_enabled && s_split_mode && !s_logic_this_frame)
         state->pc = state->lr;
 }
@@ -1010,6 +1021,8 @@ static uint64_t s_dbg_lightbad = 0;  /* fallbacks to full-skip (insane lst ptr) 
 
 static void on_dky_setlight_gate(CPUState* state)
 {
+    const uint64_t t0 = s_cost ? host_now_ns() : 0;
+    ++s_hook_calls;
     if (!(s_enabled && s_split_mode && !s_logic_this_frame && s_rframe_render))
         return;
     ++s_dbg_lightgate;
@@ -1048,10 +1061,13 @@ static void on_dky_setlight_gate(CPUState* state)
                 (unsigned)s_light_stts0[0], (unsigned)s_light_stts0[1], (unsigned)s_light_stts0[2]);
     /* fall through — the body runs and re-uploads every masked light under
      * the lerped j3dSys view; the return hook rewinds the write set. */
+    if (s_cost) { s_c_lit_ns += host_now_ns() - t0; ++s_c_lit_n; }
 }
 
 static void on_dky_setlight_return(CPUState* state)
 {
+    const uint64_t t0 = s_cost ? host_now_ns() : 0;
+    ++s_hook_calls;
     if (!s_light_snap)
         return;
     s_light_snap = 0;
@@ -1102,10 +1118,12 @@ static void on_dky_setlight_return(CPUState* state)
                 (unsigned long long)s_dbg_lightfix,
                 (unsigned long long)s_dbg_lightbad);
     }
+    if (s_cost) { s_c_lit_ns += host_now_ns() - t0; ++s_c_lit_n; }
 }
 
 static void on_true_logic_gate(CPUState* state)
 {
+    ++s_hook_calls;
     if (s_enabled && s_split_mode && !s_logic_this_frame)
         moderngekko_mod_return_u32(state, 1u);
 }
@@ -1205,6 +1223,7 @@ static uint32_t s_fdr_self = 0;       /* fader this-ptr while an R-frame overrid
  * (s_logic_this_frame==0 there, so the redirect is never recorded). */
 static void on_fader_draw_seen(CPUState* state)
 {
+    ++s_hook_calls;
     if (!s_split_mode || s_logic_this_frame) {
         const uint32_t self = (uint32_t)state->gpr[3];
         if (in_ram(state, self, 0x10u)) {
@@ -1216,6 +1235,7 @@ static void on_fader_draw_seen(CPUState* state)
 
 static void on_fader_gate(CPUState* state)
 {
+    ++s_hook_calls;
     const uint32_t self = (uint32_t)state->gpr[3];
     const int ok = in_ram(state, self, 0x28u);
     /* Undo the R-frame's colour override before anything — control() itself
@@ -1287,6 +1307,7 @@ static void on_fader_gate(CPUState* state)
  * blr, so reuse the this-ptr captured at entry). */
 static void on_fader_return(CPUState* state)
 {
+    ++s_hook_calls;
     if (!(s_fadelog && s_logic_this_frame && s_fdl_self))
         return;
     const uint32_t self = s_fdl_self;
@@ -1298,6 +1319,7 @@ static void on_fader_return(CPUState* state)
 
 static void on_calcfade_entry(CPUState* state)
 {
+    ++s_hook_calls;
     if (s_fadelog) {
         const uint32_t mfade = rd8_fast(state, GINF_MFADE);
         const int trig = (mfade != 0u);
@@ -1336,6 +1358,7 @@ static void on_calcfade_entry(CPUState* state)
 
 static void on_calcfade_return(CPUState* state)
 {
+    ++s_hook_calls;
     if (!s_fade_snap)
         return;
     s_fade_snap = 0;
@@ -1349,6 +1372,7 @@ static void on_calcfade_return(CPUState* state)
 
 static void on_calcwipe_entry(CPUState* state)
 {
+    ++s_hook_calls;
     if (!(s_enabled && s_split_mode && !s_logic_this_frame))
         return;
     s_wipe_flag    = rd8_fast(state, DDLST_MWIPE);
@@ -1361,6 +1385,7 @@ static void on_calcwipe_entry(CPUState* state)
 
 static void on_calcwipe_return(CPUState* state)
 {
+    ++s_hook_calls;
     if (!s_wipe_snap)
         return;
     s_wipe_snap = 0;
@@ -1401,6 +1426,7 @@ static uint32_t s_sea_orig = 0;
 
 static void on_sea_draw_entry(CPUState* state)
 {
+    ++s_hook_calls;
     if (!(s_enabled && s_split_mode && s_sea_fix && !s_logic_this_frame && !s_r_dup))
         return;
     const uint32_t self = (uint32_t)state->gpr[3];
@@ -1414,6 +1440,7 @@ static void on_sea_draw_entry(CPUState* state)
 
 static void on_sea_draw_return(CPUState* state)
 {
+    ++s_hook_calls;
     if (!s_sea_snap)
         return;
     s_sea_snap = 0;
@@ -1492,6 +1519,22 @@ static void frame60_cost_report(void)
         (unsigned long long)s_c_inj_n,
         s_c_frep_n ? (double)s_c_frep_ns / (double)s_c_frep_n / 1.0e3 : 0.0,
         (unsigned long long)s_c_frep_n);
+    /* Second line: the finer R/L mod-work buckets + hook-call volume. The
+     * buckets together bound "mod host work"; frame wall minus their sum is
+     * guest code + dispatch + fifo/gpu waits (separate attribution). */
+    fprintf(stderr,
+        "[f60-cost2] jpa=%.1fus(%llu) cam=%.1fus(%llu) fol=%.1fus(%llu) "
+        "lit=%.1fus(%llu) hooks=%llu/win\n",
+        s_c_jpa_n ? (double)s_c_jpa_ns / (double)s_c_jpa_n / 1.0e3 : 0.0,
+        (unsigned long long)s_c_jpa_n,
+        s_c_cam_n ? (double)s_c_cam_ns / (double)s_c_cam_n / 1.0e3 : 0.0,
+        (unsigned long long)s_c_cam_n,
+        s_c_fol_n ? (double)s_c_fol_ns / (double)s_c_fol_n / 1.0e3 : 0.0,
+        (unsigned long long)s_c_fol_n,
+        s_c_lit_n ? (double)s_c_lit_ns / (double)s_c_lit_n / 1.0e3 : 0.0,
+        (unsigned long long)s_c_lit_n,
+        (unsigned long long)(s_hook_calls - s_hook_calls_w));
+    s_hook_calls_w = s_hook_calls;
     s_wl_ns = s_wr_ns = s_wo_ns = 0;
     s_wl_tb = s_wr_tb = s_wo_tb = 0;
     s_wl_n = s_wr_n = s_wo_n = 0;
@@ -1612,6 +1655,7 @@ static void gov_on_lframe(F60Gov* g, uint64_t tb, uint64_t ns)
 
 static void on_painter_skip(CPUState* state)
 {
+    ++s_hook_calls;
     /* F5: pin mCurrentHeap to the heap the last fpcDw built the live packet
      * lists into. Nothing between Painter entry and free() reads it, and
      * this makes free() always recycle the heap that does NOT hold the
@@ -1820,14 +1864,21 @@ static void on_painter_skip(CPUState* state)
             /* Camera view/proj: same restore+observe (the field may still
              * hold our R-frame lerp — camera_draw/view_setup are gated to
              * L-frame production, so an unchanged field restores cam_curr). */
-            if (s_cam_interp)
+            if (s_cam_interp) {
+                const uint64_t tc = s_cost ? host_now_ns() : 0;
                 camview_lframe(state);
+                if (s_cost) { s_c_cam_ns += host_now_ns() - tc; ++s_c_cam_n; }
+            }
             /* JPA: restore any lerped particle positions before Painter
              * re-draws the persistent list (the list is consumed twice —
              * the R-frame's inject must not leak into this authoritative
              * frame), then snapshot live positions as the lerp's L endpoint.
              * Runs at Painter ENTRY, before any particle draw this frame. */
-            jpa_lframe(state);
+            {
+                const uint64_t tj = s_cost ? host_now_ns() : 0;
+                jpa_lframe(state);
+                if (s_cost) { s_c_jpa_ns += host_now_ns() - tj; ++s_c_jpa_n; }
+            }
             s_fol_cut = 0;
         }
         if (s_vilog)
@@ -1882,8 +1933,11 @@ static void on_painter_skip(CPUState* state)
             j3d_rframe_refresh(state);
             const uint64_t t1 = host_now_ns();
             s_c_refr_ns += t1 - t0; ++s_c_refr_n;
-            if (s_cam_interp)
+            uint64_t tc = s_cost ? host_now_ns() : 0;
+            if (s_cam_interp) {
                 camview_rframe(state);          /* may set s_cam_cut */
+                s_c_cam_ns += host_now_ns() - tc; ++s_c_cam_n;
+            }
             if (s_cam_cut) {
                 /* Camera cut/teleport this step: a mid-view or mid-pose
                  * would smear across the jump — plain repaint: restore the
@@ -1899,14 +1953,20 @@ static void on_painter_skip(CPUState* state)
                 s_fol_cut = 1;  /* foliage bake is view-relative: same jump */
             } else {
                 j3d_rframe_inject(state, s_interp_alpha);
-                if (s_cam_interp)
+                if (s_cam_interp) {
+                    tc = host_now_ns();
                     camview_install(state, s_interp_alpha);
+                    s_c_cam_ns += host_now_ns() - tc; ++s_c_cam_n;
+                }
             }
             s_c_inj_ns += host_now_ns() - t1; ++s_c_inj_n;
         } else {
             j3d_rframe_refresh(state);
-            if (s_cam_interp)
+            uint64_t tc = s_cost ? host_now_ns() : 0;
+            if (s_cam_interp) {
                 camview_rframe(state);
+                if (s_cost) { s_c_cam_ns += host_now_ns() - tc; ++s_c_cam_n; }
+            }
             if (s_cam_cut) {
                 j3d_restore_injected(state);
                 if (s_cam_injected) {
@@ -1918,15 +1978,21 @@ static void on_painter_skip(CPUState* state)
                 s_fol_cut = 1;
             } else {
                 j3d_rframe_inject(state, s_interp_alpha);
-                if (s_cam_interp)
+                if (s_cam_interp) {
+                    tc = s_cost ? host_now_ns() : 0;
                     camview_install(state, s_interp_alpha);
+                    if (s_cost) { s_c_cam_ns += host_now_ns() - tc; ++s_c_cam_n; }
+                }
             }
         }
         /* JPA particles are world-space — they lerp even across a camera cut
          * (the world did not jump, only the view did). Skipped entirely by the
          * noinject probe like every other inject. */
-        if (s_jpa_fix && !s_noinject)
+        if (s_jpa_fix && !s_noinject) {
+            const uint64_t tj = s_cost ? host_now_ns() : 0;
             jpa_rframe(state, s_interp_alpha);
+            if (s_cost) { s_c_jpa_ns += host_now_ns() - tj; ++s_c_jpa_n; }
+        }
         /* Present-path fix: at 60Hz the R-frame's beginRender always finds
          * drawn != displaying (the L-frame's XFB has not been consumed by VI
          * yet), so exchangeXfb_double takes its else-branch — clearEfb wipes
@@ -1979,6 +2045,7 @@ static void on_painter_skip(CPUState* state)
  * re-draw it. */
 static void on_fcdw_gate(CPUState* state)
 {
+    ++s_hook_calls;
     /* Emission split: this fpcDw entry closes the Painter span — everything
      * emitted since the last Painter entry is Painter's own replay output
      * (the persistent-list redraw an R-frame CAN reproduce). */
@@ -2006,6 +2073,7 @@ static void on_fcdw_gate(CPUState* state)
  * clearEfb mid-dup and poison the next present. */
 static void on_void_render_gate(CPUState* state)
 {
+    ++s_hook_calls;
     if (s_enabled && s_split_mode && !s_logic_this_frame) {
         if (s_r_dup) {
             state->pc = state->lr;
@@ -2027,6 +2095,7 @@ static void on_void_render_gate(CPUState* state)
 
 static void on_true_render_gate(CPUState* state)
 {
+    ++s_hook_calls;
     if (s_enabled && s_split_mode && !s_logic_this_frame && s_r_dup)
         moderngekko_mod_return_u32(state, 1u);
 }
@@ -2054,6 +2123,7 @@ static uint32_t sample_xfb_y(CPUState* st, uint32_t ea)
 }
 static void on_gxcopydisp(CPUState* state)
 {
+    ++s_hook_calls;
     if (s_xfb_lum_enabled && s_prev_xfb_dest) {
         uint32_t y = sample_xfb_y(state, s_prev_xfb_dest);
         fprintf(stderr, "[xl] %c prev_dest=%08X ymean=%u\n",
@@ -2088,6 +2158,7 @@ static void on_gxcopydisp(CPUState* state)
 }
 static void on_clear_efb(CPUState* state)
 {
+    ++s_hook_calls;
     if (s_trace)
         fprintf(stderr, "[ce] %c lr=%08X\n",
                 s_logic_this_frame ? 'L' : 'R', (unsigned)state->lr);
@@ -2104,6 +2175,7 @@ static void on_clear_efb(CPUState* state)
 #define JUTVIDEO_SDRAWWAITING 0x803F78E4u
 static void on_vi_retrace(CPUState* state)
 {
+    ++s_hook_calls;
     if (!s_vilog)
         return;
     const uint32_t mgr = rd32_fast(state, JUTXFB_MANAGER);
@@ -2679,6 +2751,7 @@ static void j3d_purge_ptr_block(CPUState* st, uint32_t ptr)
 }
 static void on_jkr_opdel(CPUState* state)          /* r3 = ptr */
 {
+    ++s_hook_calls;
     if (!s_j3d_interp || !s_hist_used) return;
     const uint32_t ptr = (uint32_t)state->gpr[3];
     if (!J3D_IN_MEM1(ptr)) return;
@@ -2690,6 +2763,7 @@ static void on_jkr_free_static(CPUState* state)    /* r3 = ptr */
 }
 static void on_jkr_free_member(CPUState* state)    /* r4 = ptr, r3 = this */
 {
+    ++s_hook_calls;
     if (!s_j3d_interp || !s_hist_used) return;
     const uint32_t ptr = (uint32_t)state->gpr[4];
     if (!J3D_IN_MEM1(ptr)) return;
@@ -2697,6 +2771,7 @@ static void on_jkr_free_member(CPUState* state)    /* r4 = ptr, r3 = this */
 }
 static void on_jkr_bulk(CPUState* state)           /* r3 = this (heap) */
 {
+    ++s_hook_calls;
     if (!s_j3d_interp || !s_hist_used) return;
     const uint32_t heap = (uint32_t)state->gpr[3];
     if (!J3D_IN_MEM1(heap)) return;
@@ -2752,6 +2827,7 @@ static int j3d_drawlist_dead(CPUState* state, uint32_t db)
 }
 static void on_drawbuffer_gate(CPUState* state)
 {
+    ++s_hook_calls;
     if (!s_enabled) return;
     if (s_drawlist_chk) {
         int run = 0;
@@ -3396,6 +3472,7 @@ static J3DMtx s_tmp_mtx[J3D_MAX_JOINTS];  /* shared guest-read staging (emu thre
  * hook: those livelock on hot functions via pending_returns saturation. */
 static void on_j3d_calc_entry(CPUState* state)
 {
+    ++s_hook_calls;
     if (!s_j3d_interp) return;
     if (s_debug && ((++s_dbg_calcent) & 0xFFu) == 0u) j3d_dbg_counts("calcE");
     uint32_t mdl = (uint32_t)state->gpr[3];
@@ -4226,27 +4303,45 @@ static void fol_return(CPUState* st, FolHist* h)
 
 static void on_grass_draw_entry(CPUState* st)
 {
+    const uint64_t t0 = s_cost ? host_now_ns() : 0;
     fol_entry(st, &s_fol_grass, (uint32_t)st->gpr[3]);
+    if (s_cost) { s_c_fol_ns += host_now_ns() - t0; ++s_c_fol_n; }
+    ++s_hook_calls;
 }
 static void on_grass_draw_return(CPUState* st)
 {
+    const uint64_t t0 = s_cost ? host_now_ns() : 0;
     fol_return(st, &s_fol_grass);
+    if (s_cost) { s_c_fol_ns += host_now_ns() - t0; ++s_c_fol_n; }
+    ++s_hook_calls;
 }
 static void on_flower_draw_entry(CPUState* st)
 {
+    const uint64_t t0 = s_cost ? host_now_ns() : 0;
     fol_entry(st, &s_fol_flower, (uint32_t)st->gpr[3]);
+    if (s_cost) { s_c_fol_ns += host_now_ns() - t0; ++s_c_fol_n; }
+    ++s_hook_calls;
 }
 static void on_flower_draw_return(CPUState* st)
 {
+    const uint64_t t0 = s_cost ? host_now_ns() : 0;
     fol_return(st, &s_fol_flower);
+    if (s_cost) { s_c_fol_ns += host_now_ns() - t0; ++s_c_fol_n; }
+    ++s_hook_calls;
 }
 static void on_tree_draw_entry(CPUState* st)
 {
+    const uint64_t t0 = s_cost ? host_now_ns() : 0;
     fol_entry(st, &s_fol_tree, (uint32_t)st->gpr[3]);
+    if (s_cost) { s_c_fol_ns += host_now_ns() - t0; ++s_c_fol_n; }
+    ++s_hook_calls;
 }
 static void on_tree_draw_return(CPUState* st)
 {
+    const uint64_t t0 = s_cost ? host_now_ns() : 0;
     fol_return(st, &s_fol_tree);
+    if (s_cost) { s_c_fol_ns += host_now_ns() - t0; ++s_c_fol_n; }
+    ++s_hook_calls;
 }
 
 /* ========== D4-b JPA particle position lerp (MODERNGEKKO_F60_JPA_FIX) ========
@@ -4545,6 +4640,11 @@ static void f60_reset_runtime_state(CPUState* st)
     s_c_refr_ns = s_c_refr_n = 0;
     s_c_inj_ns = s_c_inj_n = 0;
     s_c_frep_ns = s_c_frep_n = 0;
+    s_c_jpa_ns = s_c_jpa_n = 0;
+    s_c_cam_ns = s_c_cam_n = 0;
+    s_c_fol_ns = s_c_fol_n = 0;
+    s_c_lit_ns = s_c_lit_n = 0;
+    s_hook_calls = s_hook_calls_w = 0;
     s_dbg_jfast = s_dbg_jmiss = 0;
     s_dbg_lframes = s_dbg_rframes = 0;
     s_dbg_snapcall = s_dbg_skipni = 0;
@@ -4588,6 +4688,7 @@ static void frame60_is_logic_frame(CPUState* state)
  * Allocates history early (init-only hook, fires once per model). */
 static void on_entryModelData(CPUState* state)
 {
+    ++s_hook_calls;
     if (s_debug && ((++s_dbg_entrymd) & 0xFFu) == 0u) j3d_dbg_counts("entryMD");
     if (!s_j3d_interp) return;
     uint32_t model_ptr = (uint32_t)state->gpr[3];
@@ -4600,6 +4701,7 @@ static void on_entryModelData(CPUState* state)
 /* B3: J3DModel::~J3DModel @0x802ED5AC — free */
 static void on_j3d_dtor(CPUState* state)
 {
+    ++s_hook_calls;
     if (s_debug && ((++s_dbg_dtor) & 0xFFu) == 0u) j3d_dbg_counts("dtor");
     if (!s_j3d_interp) return;
     uint32_t model_ptr = (uint32_t)state->gpr[3];
@@ -4671,6 +4773,7 @@ static uint32_t j3d_judge_walk(CPUState* s, uint32_t node, int via_filter,
 
 static void on_cNdIt_Judge(CPUState* state)
 {
+    ++s_hook_calls;
     if (!s_judge_fast) return;
     const uint32_t node0 = state->gpr[3];
     const uint32_t judge = state->gpr[4];
@@ -4725,6 +4828,7 @@ static void on_cNdIt_Judge(CPUState* state)
 #define GCLIBM_COS 0x8033071Cu
 static void on_libm(CPUState* state)
 {
+    ++s_hook_calls;
     if (!s_libm_fast) return;
     const uint32_t pc = state->pc;
     if (pc == GCLIBM_SIN) state->fpr[1] = sin(state->fpr[1]);
