@@ -205,11 +205,12 @@ static uint32_t s_purge_epoch_always = 0; /* MODERNGEKKO_F60_PURGE_EPOCH_ALWAYS 
 static uint32_t s_force_else = 0;     /* MODERNGEKKO_F60_FORCE_ELSE — L-frames take else-branch */
 static uint32_t s_dirty_exact = 1;    /* MODERNGEKKO_F60_DIRTY_EXACT — endpoint-diff dirty gate */
 static uint32_t s_sparse_wr = 1;      /* MODERNGEKKO_F60_SPARSE_WR — write only changed 48B mtx */
-static uint32_t s_ovlp_gate_peek = 1; /* MODERNGEKKO_F60_OVLP_PEEK — dup only while mIsPeek      */
+static uint32_t s_ovlp_gate_peek = 1; /* MODERNGEKKO_F60_OVLP_PEEK — phase-aware dup narrowing   */
 static uint32_t s_mdllog = 0;         /* MODERNGEKKO_F60_MDLLOG — per-model coverage dump        */
 static uint32_t s_overlap_active = 0; /* fopOvlpM overlap in flight — R-frames take dup present  */
 static uint32_t s_ovlp_peek = 0;      /* overlap request mIsPeek (+0x08) sampled this iteration —
-                                       * 1 while the cover/swap/reveal automaton is in flight  */
+                                       * 1 while the cover/peek (WaitOfFadeout) phase is active */
+static uint32_t s_ovlp_phase = 0;     /* request mPhs.id (+0x1C): 0-3 scene live, >=4 teardown    */
 static uint32_t s_ovlp_peek_dbg = 0;  /* last peek value the debug line reported                 */
 static uint64_t s_dbg_ovr_rep = 0;    /* R-frames repainted while overlap active (peek==0)       */
 static uint32_t s_mdllog_l = 0;       /* L-frames since the last MDLLOG coverage dump            */
@@ -616,6 +617,7 @@ static void frame60_accum_decide(CPUState* state, uint32_t* disp_out)
         s_first = 0;
         s_overlap_active = 0;
         s_ovlp_peek = 0;
+        s_ovlp_phase = 0;
         s_pair_pad = 0;
         s_l_delta = 0;
         return;
@@ -719,34 +721,50 @@ static void frame60_accum_decide(CPUState* state, uint32_t* disp_out)
     {
         const uint32_t req = rd32_fast(state, 0x803F6160u);
         const uint32_t ovr = (req != 0u) ? 1u : 0u;
-        /* overlap_request_class::mIsPeek @+0x08 (decomp-verified): the
-         * request sets it every tick spent in phase_WaitOfFadeout — the
-         * peektime countdown, the wait for the task to signal readiness
-         * (flag2==2), and the interval after it commands the task's mRq to
-         * execute the scene swap — then clears it in IsWaitOfFadeout once
-         * the task's mRq reports done. So mIsPeek==1 brackets exactly the
-         * window where teardown frees + scene-init allocates can leave the
-         * persistent packet list / J3D arrays dangling (plus the covered
-         * "peeking" pause, where a dup is free anyway). Before it the task's
-         * cover anim is still drawing over the intact OLD scene; after it
-         * the NEW scene is stable — repainting either side is safe and
-         * keeps dialog-adjacent pauses interpolated. The struct read is
-         * bounds-guarded; a nonzero request that isn't a sane MEM1 object is
-         * treated as peeking — the bit exists to prove repaint is safe, so
-         * "can't prove" falls back to the old dup behaviour. The request only
-         * advances inside fapGm_After, which is gated to L-frames, so the
-         * sampled bit is stable across the whole R-frame. */
-        s_ovlp_peek = (ovr &&
-                       (!in_ram(state, req, 0x0Cu) ||
-                        rd32_fast(state, req + 0x08u) != 0u)) ? 1u : 0u;
+        /* overlap_request_class layout (decomp-verified):
+         *   +0x08 mIsPeek — set every tick in phase_WaitOfFadeout, cleared
+         *         when the task's mRq completes in phase_IsWaitOfFadeout;
+         *   +0x1C mPhs.id — the request's phase index into phaseMethod[8]:
+         *         0 Create, 1 IsCreated, 2 IsComplete, 3 WaitOfFadeout,
+         *         4 IsWaitOfFadeout, 5 IsDone, 6 Done.
+         * The phases split the request into exactly the two regimes the
+         * dup gate cares about. Phases 0-3 run while the OLD scene is
+         * still alive and being presented — during 3 (peek) the cover task
+         * draws the old scene under the fade, so repainting interpolates
+         * real on-screen content (this is the window the whole-request dup
+         * used to freeze). Phases 4-6 begin once the task's mRq reports
+         * done: the requester proceeds to swap scenes, i.e. teardown
+         * frees + scene-init allocates start hitting the persistent
+         * packet list / J3D arrays — repaint there walks dangling data
+         * (observed: two stalls on ovlphang-d7 / cold-boot with repaint
+         * active at peek==0). So the safe criterion is the PHASE, not the
+         * peek bit: repaint iff phase <= 3; dup iff phase >= 4 or the
+         * request can't be proven readable. The bit/phase only advance
+         * inside fapGm_After on L-frames, so the sample is stable across
+         * the whole R-frame. */
+        uint32_t phase = 7u;
+        if (ovr) {
+            if (!in_ram(state, req, 0x20u)) {
+                phase = 7u;                       /* can't prove safe -> teardown side */
+                s_ovlp_peek = 1u;
+            } else {
+                phase = rd32_fast(state, req + 0x1Cu);
+                if (phase > 7u) phase = 7u;
+                s_ovlp_peek = rd32_fast(state, req + 0x08u) != 0u ? 1u : 0u;
+            }
+        } else {
+            s_ovlp_peek = 0u;
+        }
         if (s_debug && (ovr != s_overlap_active ||
-                        (ovr && s_ovlp_peek != s_ovlp_peek_dbg)))
-            fprintf(stderr, "[f60] overlap %s peek=%u — R-frames %s\n",
+                        (ovr && (s_ovlp_peek != s_ovlp_peek_dbg || phase != s_ovlp_phase))))
+            fprintf(stderr, "[f60] overlap %s peek=%u ph=%u — R-frames %s\n",
                     ovr ? "engaged" : "cleared", (unsigned)s_ovlp_peek,
-                    (ovr && (!s_ovlp_gate_peek || s_ovlp_peek))
+                    (unsigned)phase,
+                    (ovr && (!s_ovlp_gate_peek || phase >= 4u))
                         ? "-> dup present" : "-> repaint");
         s_overlap_active = ovr;
         s_ovlp_peek_dbg = s_ovlp_peek;
+        s_ovlp_phase = phase;
     }
     if (s_debug) {
         if (s_logic_this_frame) ++s_dbg_lframes; else ++s_dbg_rframes;
@@ -1891,21 +1909,25 @@ static void on_painter_skip(CPUState* state)
             vilog_note_eye(state);
         return;
     }
-    /* Overlap peek in flight: take the SAFE R-frame — the duplicate-present
-     * tail-call touches neither the persistent packet list nor the J3D
-     * arrays while scene teardown may be freeing them (the reason the guard
-     * exists). Narrowed (MODERNGEKKO_F60_OVLP_PEEK, default on) from the
-     * whole request to its mIsPeek window: the request holds the bit through
-     * the peek countdown + the task's scene-swap execution — the interval
-     * where teardown can free what repaint would touch. Before it the OLD
-     * scene draws normally under the task's cover anim (repaint valid);
-     * after the task's mRq completes the NEW scene is stable. Note the
-     * covered pause counts as peek: dup'ing a covered screen is free.
-     * s_ovlp_gate_peek=0 restores the old whole-request dup. The 30Hz
-     * cadence is untouched either way (see frame60_accum_decide), so
-     * fades/wipes/timers keep retail timing. FIFO replay also falls back:
-     * re-patching a captured stream is unsafe mid-teardown. */
-    if (s_overlap_active && (!s_ovlp_gate_peek || s_ovlp_peek)) {
+    /* Overlap request in its teardown phases: take the SAFE R-frame — the
+     * duplicate-present tail-call touches neither the persistent packet
+     * list nor the J3D arrays while scene teardown may be freeing them
+     * (the reason the guard exists). Narrowed (MODERNGEKKO_F60_OVLP_PEEK,
+     * default on) from the whole request to its teardown tail: the
+     * request's mPhs.id runs 0-3 while the OLD scene is alive and drawn —
+     * phases 0-2 are normal scene rendering with the cover task spawning,
+     * phase 3 (WaitOfFadeout, mIsPeek==1) is the peek window where the
+     * task draws the old scene under the fade — repaint interpolates real
+     * on-screen content in all of them. Phases 4-6
+     * (IsWaitOfFadeout/IsDone/Done) are the completion boundary where the
+     * requester proceeds to swap scenes — the window that can free what
+     * repaint would touch — so those dup. An unreadable request also dups
+     * (can't prove safety). s_ovlp_gate_peek=0 restores the old
+     * whole-request dup. The 30Hz cadence is untouched either way (see
+     * frame60_accum_decide), so fades/wipes/timers keep retail timing.
+     * FIFO replay also falls back: re-patching a captured stream is
+     * unsafe mid-teardown. */
+    if (s_overlap_active && (!s_ovlp_gate_peek || s_ovlp_phase >= 4u)) {
         ++s_dbg_ovr_dup;
     } else if (s_wnum_gate && rd8_fast(state, GAMEINFO_WNUM) == 0u) {
         /* windowNum==0: Painter's whole 3D/deferred pipeline is off and the
@@ -1928,9 +1950,9 @@ static void on_painter_skip(CPUState* state)
          * lists not yet populated during scene init. Safer to dup. */
         ++s_dbg_gp_dup;
     } else if (s_rframe_render && s_j3d_interp) {
-        /* Overlap request alive but outside its peek window (task create /
-         * cover anim, or post-reveal cleanup): the scene on screen is intact,
-         * so repaint/interpolate instead of dup — counted separately. */
+        /* Overlap request alive but in a scene-live phase (0-3): the
+         * scene on screen is intact — repaint/interpolate instead of dup,
+         * counted separately. */
         if (s_overlap_active) ++s_dbg_ovr_rep;
         /* Refresh observes whatever production left between the L-frame's
          * snapshot and now: the L-frame's OWN production ran after its
@@ -4694,6 +4716,7 @@ static void f60_reset_runtime_state(CPUState* st)
     s_jfw_display = 0;
     s_overlap_active = 0;
     s_ovlp_peek = 0;
+    s_ovlp_phase = 0;
     s_ovlp_peek_dbg = 0;
     s_r_dup = 0;
     s_cam_injected = 0;

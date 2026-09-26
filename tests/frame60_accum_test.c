@@ -1182,11 +1182,14 @@ int main(void)
         s_libm_fast = 1u;
     }
 
-    /* ==== overlap -> cadence kept, R-frames dup ==========================
+    /* ==== overlap -> cadence kept, phase-aware R-frame gate ===============
      * delta = TICK/4 -> pattern L R R R L R R R ... (acc ticks every 4th).
      * The overlap guard keeps cadence and steers R-frames to the dup
-     * tail-call even in render+interp mode — but (characters lane) only
-     * while the request's mIsPeek bit is set (cover+swap+task reveal). */
+     * tail-call even in render+interp mode — but (characters lane) only in
+     * the request's TEARDOWN phases (mPhs.id >= 4: IsWaitOfFadeout/IsDone/
+     * Done — the scene-swap boundary). Phases 0-3 — task creation plus the
+     * WaitOfFadeout peek window where the task draws the old scene under
+     * the cover — repaint: the scene is alive and on-screen. */
     {
         const uint32_t disp = 0x80000100u;
         const uint32_t req = 0x80003000u;   /* fake overlap_request_class */
@@ -1203,9 +1206,11 @@ int main(void)
                    (uint32_t)(TICK_30FPS / 4u));
         s_memory[GAMEINFO_WNUM - 0x80000000u] = 1u;            /* windowed scene (u8) */
         store_be16(&s_memory[GINF_MCAPTURESTEP - 0x80000000u], 0u);
-        /* overlap request alive, mIsPeek=1 -> dup */
+        /* overlap request alive in a scene-live phase: Create(id=0),
+         * peek off — repaint. */
         store_be32(&s_memory[0x803F6160u - 0x80000000u], req);
-        store_be32(&s_memory[req + 0x08u - 0x80000000u], 1u);
+        store_be32(&s_memory[req + 0x08u - 0x80000000u], 0u);  /* mIsPeek */
+        store_be32(&s_memory[req + 0x1Cu - 0x80000000u], 0u);  /* mPhs.id  */
 
         uint32_t l_n = 0, r_n = 0, dup_n = 0, rep_n = 0;
         for (int i = 0; i < 8; ++i)
@@ -1219,19 +1224,20 @@ int main(void)
                 else ++rep_n;
             }
         }
-        /* cadence kept (l_n==2, r_n==6) and every R dups. */
+        /* cadence kept (l_n==2, r_n==6) and every R repaints. */
         if (l_n != 2u || r_n != 6u)
             return 101;
-        if (dup_n != 6u || rep_n != 0u)
+        if (dup_n != 0u || rep_n != 6u)
             return 102;
-        if (s_dbg_ovr_dup != 6u)
+        if (s_dbg_ovr_rep != 6u)
             return 103;
-        if (!s_overlap_active || !s_ovlp_peek)
+        if (!s_overlap_active || s_ovlp_peek || s_ovlp_phase != 0u)
             return 104;
 
-        /* mIsPeek=0 (request alive but pre-cover / post-reveal): the scene
-         * is intact, so R-frames repaint instead of dup. */
-        store_be32(&s_memory[req + 0x08u - 0x80000000u], 0u);
+        /* Peek window: WaitOfFadeout (id=3, mIsPeek=1) — the task draws
+         * the old scene under the cover -> repaint, not dup. */
+        store_be32(&s_memory[req + 0x08u - 0x80000000u], 1u);
+        store_be32(&s_memory[req + 0x1Cu - 0x80000000u], 3u);
         rep_n = 0; dup_n = 0;
         for (int i = 0; i < 8; ++i)
         {
@@ -1244,13 +1250,31 @@ int main(void)
         }
         if (dup_n != 0u || rep_n != 6u)
             return 1022;
-        if (s_dbg_ovr_rep != 6u)
+        if (!s_overlap_active || !s_ovlp_peek || s_ovlp_phase != 3u)
             return 1023;
-        if (!s_overlap_active || s_ovlp_peek)
+
+        /* Teardown boundary: IsWaitOfFadeout/IsDone/Done (id=4..6) ->
+         * dup regardless of the peek bit. */
+        store_be32(&s_memory[req + 0x08u - 0x80000000u], 0u);
+        store_be32(&s_memory[req + 0x1Cu - 0x80000000u], 4u);
+        rep_n = 0; dup_n = 0;
+        for (int i = 0; i < 8; ++i)
+        {
+            state.pc = 0x8000AF2Cu; state.gpr[3] = 0xDEADBEEFu;
+            on_painter_skip(&state);
+            if (!s_logic_this_frame)
+            {
+                if (state.pc == JFW_BEGIN_RENDER) ++dup_n; else ++rep_n;
+            }
+        }
+        if (dup_n != 6u || rep_n != 0u)
             return 1024;
+        if (s_dbg_ovr_dup < 6u)
+            return 1026;
 
         /* Kill switch MODERNGEKKO_F60_OVLP_PEEK=0 restores the flat
-         * whole-request dup gate. */
+         * whole-request dup gate even in a scene-live phase. */
+        store_be32(&s_memory[req + 0x1Cu - 0x80000000u], 0u);
         s_ovlp_gate_peek = 0u;
         dup_n = rep_n = 0;
         for (int i = 0; i < 8; ++i)
@@ -1280,7 +1304,7 @@ int main(void)
             }
         }
         if (dup_n != 6u || rep_n != 0u)
-            return 1026;
+            return 1027;
 
         /* overlap clears -> R-frames go back to the repaint path (no dup). */
         store_be32(&s_memory[0x803F6160u - 0x80000000u], 0u);
@@ -2140,7 +2164,7 @@ int main(void)
         s_fol_grass.armed = 1u; s_fol_grass.self = 0x80123456u;
         s_jpa[0].addr = 0x80320000u; s_jpa[0].injected = 1u;
         s_trace_prev_drawn = 5;
-        s_overlap_active = 1u; s_ovlp_peek = 1u; s_r_dup = 1u;
+        s_overlap_active = 1u; s_ovlp_peek = 1u; s_ovlp_phase = 4u; s_r_dup = 1u;
         /* Disengage edge must clear them all. */
         s_split_mode = 1u;
         store_be32(&s_memory[display + JFW_OFF_TICKRATE - 0x80000000u], 450000u);
@@ -2162,7 +2186,7 @@ int main(void)
         if (s_fol_cut || s_fol_grass.armed || s_fol_grass.self) return 289;
         if (s_jpa[0].addr || s_jpa[0].injected) return 290;
         if (s_trace_prev_drawn != -2) return 291;
-        if (s_overlap_active || s_ovlp_peek || s_r_dup || s_split_mode) return 292;
+        if (s_overlap_active || s_ovlp_peek || s_ovlp_phase || s_r_dup || s_split_mode) return 292;
         if (s_list_heap != (s_memory[GINF_MCURRHEAP - 0x80000000u] & 1u))
             return 293;
 
