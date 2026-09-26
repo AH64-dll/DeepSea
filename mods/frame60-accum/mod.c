@@ -3656,6 +3656,17 @@ static void j3d_snapshot_pose(CPUState* state)
         ++h->lg_snap;
         const uint32_t was_injected = h->injected;
         const uint32_t was_tele = h->teleported;
+        /* lg_dirty: the pose-changed flag meaningful at this point is the
+         * one left by the LAST observation — the preceding R-frame refresh
+         * rotate (execute writes the next pose after the L-Painter, so the
+         * refresh is where a moved pose is first seen) or a foreign-write
+         * observation. This snapshot's own rotate then re-checks live vs
+         * prev — which is always identical right after the scratch restore,
+         * so the POST-rotate flag would read 0 even for a walking character
+         * (which is why the old dt counts stuck at ~1). Count the pre-rotate
+         * flags instead, OR'd with any fresh diff this rotate itself sees. */
+        const uint32_t was_dirty = h->dirty;
+        const uint32_t was_ddraw = h->dirty_draw;
         h->injected = 0;
         /* Post-snapshot every array holds the observed pose (restored curr or
          * fresh production bytes) — nothing of ours lives anywhere. */
@@ -3670,7 +3681,7 @@ static void j3d_snapshot_pose(CPUState* state)
                 read_mtx_arr(state, h->node_ptr, s_tmp_mtx, h->joint_num);
             hist_rotate(h->prev, h->curr, s_tmp_mtx, h->joint_num,
                         &h->has_prev, &h->dirty, &h->teleported);
-            if (h->dirty) ++h->lg_dirty;
+            if (was_dirty || h->dirty) ++h->lg_dirty;
             if (h->wEvlp_num && h->prev_env && h->curr_env && J3D_IN_MEM1(h->env_ptr)) {
                 uint32_t d = 0, t = 0;
                 if (was_injected && h->scratch_env)
@@ -3704,7 +3715,7 @@ static void j3d_snapshot_pose(CPUState* state)
                 read_mtx_arr(state, arr, s_tmp_mtx, dn);
             hist_rotate(h->prev_draw, h->curr_draw, s_tmp_mtx, dn,
                         &h->has_prev_draw, &h->dirty_draw, &h->teleported);
-            if (h->dirty_draw) ++h->lg_dirty;
+            if (was_ddraw || h->dirty_draw) ++h->lg_dirty;
         }
         if (h->teleported && !was_tele) ++h->lg_tp;
     }

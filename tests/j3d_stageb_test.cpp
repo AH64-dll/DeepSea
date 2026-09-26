@@ -238,14 +238,6 @@ int main(){
   }
   // TB-12 passthrough gates (6 subcases)
   {
-    struct Case{const char* n; bool setup;};
-    auto test_gate=[&](uint32_t ptr,float alpha,int expect,bool isCpuSkinning){
-      (void)isCpuSkinning;
-      J3DHistory* h=j3d_find(ptr);
-      int should=j3d_should_lerp(h,alpha);
-      if(isCpuSkinning) should=0; // gate 6
-      return should==expect;
-    };
     auto* h=j3d_history_ensure(0x7000,4,0,0);
     J3DMtx P[4]={}, C[4]={}; C[0].m[0][3]=10;
     memcpy(h->prev,P,4*48); memcpy(h->curr,C,4*48); h->has_prev=1; h->dirty=1; h->teleported=0; h->no_interp=0;
