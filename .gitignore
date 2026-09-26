@@ -12,3 +12,5 @@
 __pycache__/
 *.pyc
 out/
+mods/*/mod.dll
+tests/*.exe
