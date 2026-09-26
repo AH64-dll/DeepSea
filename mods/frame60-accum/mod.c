@@ -1612,6 +1612,9 @@ static void gov_on_lframe(F60Gov* g, uint64_t tb, uint64_t ns)
                                 (double)g->win[GOV_WINDOW / 2]);
     g->win_n = 0;
     g->last_speed = speed;
+    if (s_debug)
+        fprintf(stderr, "[f60-gov] speed=%.3f dup=%u probe=%u\n",
+                speed, (unsigned)g->degraded, (unsigned)g->probing);
     if (g->degraded) {
         if (ns < g->retry_at_ns)
             return;
