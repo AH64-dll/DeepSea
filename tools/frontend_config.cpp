@@ -859,8 +859,9 @@ DefaultPadControlsImpl(std::string_view device) {
         {"Main Stick/Calibration", "100.00"},
         {"C-Stick/Up", "I"},
         {"C-Stick/Down", "K"},
-        {"C-Stick/Left", "J"},
-        {"C-Stick/Right", "L"},
+        // J/L turn the view left/right (the game's C-stick X is the reverse).
+        {"C-Stick/Left", "L"},
+        {"C-Stick/Right", "J"},
         {"C-Stick/Modifier", "Ctrl"},
         {"C-Stick/Modifier/Range", "50.00"},
         {"C-Stick/Calibration", "100.00"},
@@ -918,13 +919,15 @@ DefaultPadControlsImpl(std::string_view device) {
       {"Main Stick/Left", "`Left X-`"},
       {"Main Stick/Right", "`Left X+`"},
       {"Main Stick/Calibration", "100.00"},
-      // Camera stick Y is inverted from the console by default. Dolphin names
-      // SDL axes the XInput way (`Right Y+` is stick up), so the same pair
-      // fits XInput and SDL pads.
-      {"C-Stick/Up", "`Right Y-`"},
-      {"C-Stick/Down", "`Right Y+`"},
-      {"C-Stick/Left", "`Right X-`"},
-      {"C-Stick/Right", "`Right X+`"},
+      // The game turns the view LEFT for C-stick right, the reverse of modern
+      // third-person cameras, so X is swapped by default: stick right looks
+      // right. Y stays as on the console (C-stick up already looks up).
+      // Dolphin names SDL axes the XInput way (`Right Y+` is up, `Right X+`
+      // is right), so the same pairs fit XInput and SDL pads.
+      {"C-Stick/Up", "`Right Y+`"},
+      {"C-Stick/Down", "`Right Y-`"},
+      {"C-Stick/Left", "`Right X+`"},
+      {"C-Stick/Right", "`Right X-`"},
       {"C-Stick/Calibration", "100.00"},
       {"Triggers/L", "`Trigger L`"},
       {"Triggers/R", "`Trigger R`"},

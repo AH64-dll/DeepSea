@@ -1628,7 +1628,7 @@ int main(int argc, char** argv)
           // Standard gamepad axes have two bindings each. Swapping the pair
           // keeps the choice in GCPadNew.ini, including across device changes.
           // Custom mappings remain editable in the binding table below.
-          const auto invert_stick_y = [&](const char* label,
+          const auto invert_camera_axis = [&](const char* label,
                                           std::string_view up_key,
                                           std::string_view down_key,
                                           std::string_view normal_up,
@@ -1660,8 +1660,12 @@ int main(int argc, char** argv)
                     user_directory);
             }
           };
-          invert_stick_y("Invert camera stick Y", "C-Stick/Up",
-                         "C-Stick/Down", "`Right Y-`", "`Right Y+`");
+          // Normal = modern camera: stick right looks right, up looks up.
+          // Checked = the console's direction for that axis.
+          invert_camera_axis("Invert camera stick X", "C-Stick/Left",
+                         "C-Stick/Right", "`Right X+`", "`Right X-`");
+          invert_camera_axis("Invert camera stick Y", "C-Stick/Up",
+                         "C-Stick/Down", "`Right Y+`", "`Right Y-`");
           if (capture.detector && capture.port == port)
           {
             ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.45f, 1.0f),
