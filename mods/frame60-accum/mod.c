@@ -1517,7 +1517,7 @@ static void frame60_cost_report(void)
  * are dropped; they say nothing about sustained headroom. */
 #define GOV_WINDOW        60u                /* L-frames per verdict (~2 s)       */
 #define GOV_GAP_MAX_NS    150000000ull       /* longer L->L gap: not a sample     */
-#define GOV_SLOW          0.95               /* speed below this: no headroom     */
+#define GOV_SLOW          0.90               /* speed below this: no headroom     */
 #define GOV_DUP_OK        0.97               /* dup-mode speed needed to retry    */
 #define GOV_SLOW_WINDOWS  2u                 /* consecutive slow verdicts to act  */
 #define GOV_HOLD_MIN_NS   15000000000ull
