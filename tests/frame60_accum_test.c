@@ -2387,6 +2387,37 @@ int main(void)
         memset(&s_memory[DMC_FIRST_EA - 0x80000000u], 0, 4u);
     }
 
+    /* ==== Wave2 cloth: rel sectionInfoOffset / section .offset stored as
+     * image-relative offsets =================================================
+     * This port's rel_loader leaves OSModuleInfo::sectionInfoOffset (and the
+     * OSSectionInfo .offset fields) as raw file offsets instead of patching
+     * them to absolute addresses like stock OSLink. Resolve must translate
+     * both encodings (observed at runtime: sectionInfoOffset == 0x4C). */
+    {
+        const uint32_t node = 0x80200000u, mod = 0x80210000u;
+        const uint32_t name_ea = 0x80200080u;
+        const uint32_t tbl_off = 0x100u;          /* tbl lands at mod+0x100 */
+        const uint32_t data_off = 0x0F0000u;      /* .data at mod+0xF0000   */
+        const uint32_t tbl = mod + tbl_off;
+        memset(&s_memory[node - 0x80000000u], 0, 0x2000u);
+        store_be32(&s_memory[DMC_FIRST_EA - 0x80000000u], node);
+        store_be16(&s_memory[node + DMC_OFF_LINKCNT - 0x80000000u], 1u);
+        store_be32(&s_memory[node + DMC_OFF_MODULE  - 0x80000000u], mod);
+        store_be32(&s_memory[node + DMC_OFF_NAME    - 0x80000000u], name_ea);
+        memcpy(&s_memory[name_ea - 0x80000000u], "d_a_sail", 9u);
+        store_be32(&s_memory[mod + OSM_OFF_SECTBL - 0x80000000u], tbl_off);
+        store_be32(&s_memory[tbl + CLOTH_SEC_DATA * 8u     - 0x80000000u], data_off);
+        store_be32(&s_memory[tbl + CLOTH_SEC_DATA * 8u + 4u - 0x80000000u], 0x4000u);
+        {
+            uint32_t bases[CLOTH_NSPEC];
+            memset(bases, 0, sizeof(bases));
+            cloth_resolve_bases(&state, bases, CLOTH_NSPEC);
+            if (bases[0] != mod + data_off)
+                return 520;
+        }
+        memset(&s_memory[DMC_FIRST_EA - 0x80000000u], 0, 4u);
+    }
+
     /* ==== Wave2 cloth: warp guard on rel path (teleport -> plain repaint) ==== */
     {
         const ClothSpec* sp = &s_cloth_specs[1];   /* d_a_goal_flag */

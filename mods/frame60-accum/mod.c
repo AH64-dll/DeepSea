@@ -489,6 +489,12 @@ static uint64_t s_cloth_dbg_lerp, s_cloth_dbg_skip; /* cloth packets lerped / wa
 static uint64_t s_cloth_dbg_dol;                  /* DOL draw entries gated OK on R */
 static uint64_t s_cloth_dbg_rel;                  /* rel packets classified on R    */
 static uint64_t s_cloth_dbg_bas;                  /* resolved-base bitmask (OR'd)   */
+static uint64_t s_cloth_dbg_pkt;                  /* drawbuf packets visited on R   */
+static uint32_t s_cloth_dbg_vt0;                  /* last unmatched vptr seen on R  */
+static uint64_t s_cloth_dbg_dhit;                 /* DOL draw hook raw hits         */
+static uint64_t s_cloth_dbg_nodes;                /* DMC nodes walked (diag)        */
+static uint64_t s_cloth_dbg_linked;               /* linked nodes seen              */
+static uint32_t s_cloth_dbg_dumped;               /* one-shot name dump done        */
 static uint32_t s_hist_used;
 static uint32_t s_matrices_injected = 0; /* live guest arrays currently hold our lerp */
 
@@ -770,10 +776,15 @@ static void frame60_accum_decide(CPUState* state, uint32_t* disp_out)
                     (unsigned long long)s_dbg_jpainj,
                     (unsigned long long)s_cloth_dbg_lerp,
                     (unsigned long long)s_cloth_dbg_skip);
-                fprintf(stderr, "[f60-cloth] dol=%llu rel=%llu bas=%llu\n",
+                fprintf(stderr, "[f60-cloth] dhit=%llu dol=%llu rel=%llu bas=%llu pkt=%llu vt0=%08X nd=%llu lk=%llu\n",
+                    (unsigned long long)s_cloth_dbg_dhit,
                     (unsigned long long)s_cloth_dbg_dol,
                     (unsigned long long)s_cloth_dbg_rel,
-                    (unsigned long long)s_cloth_dbg_bas);
+                    (unsigned long long)s_cloth_dbg_bas,
+                    (unsigned long long)s_cloth_dbg_pkt,
+                    (unsigned)s_cloth_dbg_vt0,
+                    (unsigned long long)s_cloth_dbg_nodes,
+                    (unsigned long long)s_cloth_dbg_linked);
             }
         }
         /* The probe walks the fifo backward one word per external read —
@@ -4548,8 +4559,13 @@ static void jpa_rframe(CPUState* st, float alpha)
 #define DMC_OFF_MODULE     0x10u        /* OSModuleHeader* mModule              */
 #define DMC_OFF_NAME       0x1Cu        /* const char* mName ("d_a_sail" ...)   */
 #define DMC_WALK_CAP       128u
-#define OSM_OFF_SECTBL     0x10u        /* OSModuleInfo::sectionInfoOffset — at
-                                        * runtime an absolute OSSectionInfo*  */
+#define OSM_OFF_SECTBL     0x10u        /* OSModuleInfo::sectionInfoOffset —
+                                        * stock OSLink patches it to an
+                                        * absolute OSSectionInfo*; this port's
+                                        * rel_loader leaves the raw FILE offset
+                                        * (observed 0x4C). Both encodings are
+                                        * accepted below; same for each entry's
+                                        * .offset. */
 #define CLOTH_SEC_DATA     5u           /* .data section index (TWW rels are
                                         * uniform: 1=.text 2=.ctors 3=.dtors
                                         * 4=.rodata 5=.data 6=.bss — verified
@@ -4663,6 +4679,7 @@ static void cloth_resolve_bases(CPUState* st, uint32_t* bases, uint32_t nb)
     for (it = 0; node && it < DMC_WALK_CAP && found < nb; ++it) {
         uint32_t mod, nm, i;
         if (!in_ram(st, node, 0x20u)) return;
+        ++s_cloth_dbg_nodes;
         mod = rd32_fast(st, node + DMC_OFF_MODULE);
         nm  = rd32_fast(st, node + DMC_OFF_NAME);
         /* Linked modules only: mLinkCount != 0 keeps a mounted-but-unlinked
@@ -4671,15 +4688,38 @@ static void cloth_resolve_bases(CPUState* st, uint32_t* bases, uint32_t nb)
             node = rd32_fast(st, node + DMC_OFF_NEXT);
             continue;
         }
+        ++s_cloth_dbg_linked;
+        if (s_debug && !s_cloth_dbg_dumped && s_cloth_dbg_linked <= 96u) {
+            char buf[32]; uint32_t c;
+            for (c = 0; c < 31u; ++c) {
+                if (!in_ram(st, nm + c, 1u)) break;
+                buf[c] = (char)rd8_fast(st, nm + c);
+                if (!buf[c]) break;
+            }
+            buf[c] = 0;
+            const uint32_t tbl0 = in_ram(st, mod, 0x14u)
+                ? rd32_fast(st, mod + OSM_OFF_SECTBL) : 0u;
+            const uint32_t tbl = (tbl0 >= 0x80000000u) ? tbl0 : mod + tbl0;
+            uint32_t s5o = 0, s5s = 0;
+            if (in_ram(st, tbl, (CLOTH_SEC_DATA + 1u) * 8u)) {
+                s5o = rd32_fast(st, tbl + CLOTH_SEC_DATA * 8u);
+                s5s = rd32_fast(st, tbl + CLOTH_SEC_DATA * 8u + 4u);
+            }
+            fprintf(stderr, "[f60-cloth-dmc] %u: %s mod=%08X tbl=%08X->%08X sec5=%08X+%08X\n",
+                    (unsigned)s_cloth_dbg_linked, buf, (unsigned)mod,
+                    (unsigned)tbl0, (unsigned)tbl, (unsigned)s5o, (unsigned)s5s);
+        }
         for (i = 0; i < nb; ++i) {
             if (bases[i] || !cloth_str_eq(st, nm, s_cloth_specs[i].rel))
                 continue;
-            const uint32_t tbl = in_ram(st, mod, 0x14u)
+            const uint32_t tbl0 = in_ram(st, mod, 0x14u)
                 ? rd32_fast(st, mod + OSM_OFF_SECTBL) : 0u;
+            const uint32_t tbl = (tbl0 >= 0x80000000u) ? tbl0 : mod + tbl0;
             if (in_ram(st, tbl, (CLOTH_SEC_DATA + 1u) * 8u) &&
                 s_cloth_specs[i].vtab_off <
                     rd32_fast(st, tbl + CLOTH_SEC_DATA * 8u + 4u)) {
-                bases[i] = rd32_fast(st, tbl + CLOTH_SEC_DATA * 8u);
+                const uint32_t soff = rd32_fast(st, tbl + CLOTH_SEC_DATA * 8u);
+                bases[i] = (soff >= 0x80000000u) ? soff : mod + soff;
                 s_cloth_dbg_bas |= (1ull << i);
                 ++found;
             }
@@ -4687,6 +4727,10 @@ static void cloth_resolve_bases(CPUState* st, uint32_t* bases, uint32_t nb)
         }
         node = rd32_fast(st, node + DMC_OFF_NEXT);
     }
+    /* One-shot: keep the dump open until a walk actually sees a linked
+     * module — an early boot-time call can walk an all-unlinked list. */
+    if (s_cloth_dbg_linked)
+        s_cloth_dbg_dumped = 1;
 }
 
 static int cloth_classify(const uint32_t* bases, uint32_t nb, uint32_t vtab)
@@ -4897,10 +4941,14 @@ static void cloth_walk_drawbufs(CPUState* st, const uint32_t* bases, uint32_t nb
             uint32_t pkt = rd32_fast(st, buf + i * 4u);
             uint32_t hops = 0;
             while (pkt && hops < J3DPKT_CHAIN_CAP && in_ram(st, pkt, 4u)) {
-                const int spec_i = cloth_classify(bases, nb, rd32_fast(st, pkt));
+                const uint32_t vt = rd32_fast(st, pkt);
+                const int spec_i = cloth_classify(bases, nb, vt);
+                if (rframe) ++s_cloth_dbg_pkt;
                 if (spec_i >= 0) {
                     if (rframe) ++s_cloth_dbg_rel;
                     cloth_visit_packet(st, pkt, spec_i, rframe, alpha);
+                } else if (rframe) {
+                    s_cloth_dbg_vt0 = vt;
                 }
                 if (!in_ram(st, pkt + J3DPKT_OFF_NEXT, 4u)) break;
                 pkt = rd32_fast(st, pkt + J3DPKT_OFF_NEXT);
@@ -4982,6 +5030,7 @@ static void on_cloth_draw_entry(CPUState* st)
     uint32_t self, cur, n, i;
     uint32_t pa, pb, na, nb, ba, bb;
     int dedup, ok = 0;
+    ++s_cloth_dbg_dhit;
     if (!s_cloth_interp) return;
     if (s_logic_this_frame || s_r_dup || s_noinject || s_fol_cut) return;
     if (!(s_split_mode && s_rframe_render && s_j3d_interp)) return;
@@ -5189,6 +5238,8 @@ static void f60_reset_runtime_state(CPUState* st)
     s_cloth_seen_n = 0;
     s_cloth_dbg_lerp = s_cloth_dbg_skip = 0;
     s_cloth_dbg_dol = s_cloth_dbg_rel = s_cloth_dbg_bas = 0;
+    s_cloth_dbg_pkt = 0; s_cloth_dbg_vt0 = 0; s_cloth_dbg_dhit = 0;
+    s_cloth_dbg_nodes = 0; s_cloth_dbg_linked = 0; s_cloth_dbg_dumped = 0;
     if (st)
         s_list_heap = rd8_fast(st, GINF_MCURRHEAP) & 1u;
     else
