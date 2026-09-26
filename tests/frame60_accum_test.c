@@ -2143,6 +2143,238 @@ int main(void)
         store_be32(&s_memory[JPA_MGR_EA - 0x80000000u], mgr);
     }
 
+    /* ================= D4-b FULL: draw-state lerp ==========================
+     * Same fixture as the position-only block plus the full field set:
+     * particle loc/pos/vel (+0x1C..0x40), axis +0x8C, scale +0x9C, alpha
+     * +0xAC, prm/env +0xB8/+0xBC, angle +0xC0, texidx +0xC6, lifetime +0x7C;
+     * emitter etrs +0x18, erot +0x24, edir +0x2C, draw colors +0x158,
+     * tick +0x164, global mtx/scale/trans +0x1A8..+0x1F0, global colors
+     * +0x1FC/+0x200, flags +0x20C. p0 stays in the active list, p1 moves
+     * to the child list. */
+    {
+        const uint32_t mgr  = 0x80300000u;
+        const uint32_t emtr = 0x80310000u;
+        const uint32_t p0   = 0x80320000u;
+        const uint32_t p1   = 0x80320200u;
+        const uint32_t grp  = mgr + 0x50u + 3u * 0x0Cu;
+        float pos[3], s2[2], f;
+        uint32_t w;
+        int k;
+        s_jpa_fix = 1u;
+        s_jpa_full = 1u;
+        memset(s_jpa, 0, sizeof(s_jpa));
+        memset(s_jpae, 0, sizeof(s_jpae));
+        memset(&s_memory[mgr - 0x80000000u], 0, 0x800u);
+        memset(&s_memory[emtr - 0x80000000u], 0, 0x400u);
+        memset(&s_memory[p0 - 0x80000000u], 0, 0x800u);
+
+        store_be32(&s_memory[JPA_MGR_EA - 0x80000000u], mgr);
+        store_be32(&s_memory[grp + 0x00u - 0x80000000u], emtr + JPA_EMTR_LINK);
+        store_be32(&s_memory[grp + 0x04u - 0x80000000u], emtr + JPA_EMTR_LINK);
+        store_be32(&s_memory[grp + 0x08u - 0x80000000u], 1u);
+        store_be32(&s_memory[emtr + JPA_EMTR_LINK + 0x0Cu - 0x80000000u], 0u);
+        /* active list: p0 only; child list: p1 */
+        store_be32(&s_memory[emtr + JPA_EMTR_ACT + 0x00u - 0x80000000u], p0);
+        store_be32(&s_memory[emtr + JPA_EMTR_ACT + 0x04u - 0x80000000u], p0);
+        store_be32(&s_memory[emtr + JPA_EMTR_ACT + 0x08u - 0x80000000u], 1u);
+        store_be32(&s_memory[emtr + JPA_EMTR_CHLD + 0x00u - 0x80000000u], p1);
+        store_be32(&s_memory[emtr + JPA_EMTR_CHLD + 0x04u - 0x80000000u], p1);
+        store_be32(&s_memory[emtr + JPA_EMTR_CHLD + 0x08u - 0x80000000u], 1u);
+        store_be32(&s_memory[p0 + JPA_LINK_NEXT - 0x80000000u], 0u);
+        store_be32(&s_memory[p1 + JPA_LINK_NEXT - 0x80000000u], 0u);
+
+        /* ---- L-state (endpoint A) ------------------------------------ */
+        store_f32(&s_memory[p0 + JPA_PTCL_FRAME - 0x80000000u], 5.0f);
+        store_f32(&s_memory[p0 + JPA_PTCL_LIFE  - 0x80000000u], 30.0f);
+        store_f32(&s_memory[p1 + JPA_PTCL_FRAME - 0x80000000u], 2.0f);
+        store_f32(&s_memory[p1 + JPA_PTCL_LIFE  - 0x80000000u], 10.0f);
+        for (k = 0; k < 3; ++k) {
+            store_f32(&s_memory[p0 + JPA_PTCL_LOCAL  + (uint32_t)k * 4u - 0x80000000u], 10.0f + (float)k);
+            store_f32(&s_memory[p0 + JPA_PTCL_GLOBAL + (uint32_t)k * 4u - 0x80000000u], 20.0f + (float)k);
+            store_f32(&s_memory[p0 + JPA_PTCL_GLOBAL + 0xCu + (uint32_t)k * 4u - 0x80000000u], 0.5f + (float)k); /* mVelocity +0x34 */
+            store_f32(&s_memory[p0 + JPA_PTCL_AXIS   + (uint32_t)k * 4u - 0x80000000u], 0.25f + (float)k);
+            store_f32(&s_memory[p1 + JPA_PTCL_GLOBAL + (uint32_t)k * 4u - 0x80000000u], 40.0f + (float)k);
+        }
+        store_f32(&s_memory[p0 + JPA_PTCL_SCL + 0u - 0x80000000u], 1.0f);
+        store_f32(&s_memory[p0 + JPA_PTCL_SCL + 4u - 0x80000000u], 2.0f);
+        store_f32(&s_memory[p0 + JPA_PTCL_AOUT - 0x80000000u], 0.4f);
+        store_be32(&s_memory[p0 + JPA_PTCL_PRM - 0x80000000u], 0x10203040u);
+        store_be32(&s_memory[p0 + JPA_PTCL_ENV - 0x80000000u], 0x8090A0B0u);
+        wr16_fast(&state, p0 + JPA_PTCL_ANGLE, 0xFF00u);  /* wrap edge */
+        wr16_fast(&state, p0 + 0xC6u, 3u);                /* mTexIdx (discrete) */
+        /* emitter endpoint A */
+        for (k = 0; k < 3; ++k) {
+            store_f32(&s_memory[emtr + JPA_EMTR_ETRS + (uint32_t)k * 4u - 0x80000000u], 100.0f + (float)k);
+            store_f32(&s_memory[emtr + JPA_EMTR_EDIR + (uint32_t)k * 4u - 0x80000000u], 0.0f + (float)k);
+            store_f32(&s_memory[emtr + JPA_EMTR_GDYN + (uint32_t)k * 4u - 0x80000000u], 1.0f + (float)k);
+            store_f32(&s_memory[emtr + JPA_EMTR_GTRN + (uint32_t)k * 4u - 0x80000000u], 200.0f + (float)k);
+            store_f32(&s_memory[emtr + JPA_EMTR_GPSCL + (uint32_t)k * 4u - 0x80000000u], 3.0f + (float)k);
+        }
+        for (k = 0; k < 12; ++k)
+            store_f32(&s_memory[emtr + JPA_EMTR_GROT + (uint32_t)k * 4u - 0x80000000u], 0.5f + (float)k);
+        wr16_fast(&state, emtr + JPA_EMTR_EROT + 0u, (uint16_t)179); /* deg wrap edge */
+        wr16_fast(&state, emtr + JPA_EMTR_EROT + 2u, 10u);
+        wr16_fast(&state, emtr + JPA_EMTR_EROT + 4u, 20u);
+        store_be32(&s_memory[emtr + JPA_EMTR_DCLR + 0u - 0x80000000u], 0x20406080u);
+        store_be32(&s_memory[emtr + JPA_EMTR_DCLR + 4u - 0x80000000u], 0xA0B0C0D0u);
+        store_f32(&s_memory[emtr + JPA_EMTR_TICK - 0x80000000u], 7.0f);
+        store_be32(&s_memory[emtr + JPA_EMTR_GCLR + 0u - 0x80000000u], 0x11223344u);
+        store_be32(&s_memory[emtr + JPA_EMTR_GCLR + 4u - 0x80000000u], 0x55667788u);
+        store_be32(&s_memory[emtr + JPA_EMTR_FLAGS - 0x80000000u], 0u);
+        wr16_fast(&state, emtr + 0x160u, 5u);  /* mDraw.mTexIdx (discrete) */
+
+        jpa_lframe(&state);
+
+        /* ---- calc tick: everything advances one frame ----------------- */
+        store_f32(&s_memory[p0 + JPA_PTCL_FRAME - 0x80000000u], 6.0f);
+        store_f32(&s_memory[p1 + JPA_PTCL_FRAME - 0x80000000u], 3.0f);
+        for (k = 0; k < 3; ++k) {
+            store_f32(&s_memory[p0 + JPA_PTCL_LOCAL  + (uint32_t)k * 4u - 0x80000000u], 14.0f + (float)k);
+            store_f32(&s_memory[p0 + JPA_PTCL_GLOBAL + (uint32_t)k * 4u - 0x80000000u], 28.0f + (float)k);
+            store_f32(&s_memory[p0 + JPA_PTCL_GLOBAL + 0xCu + (uint32_t)k * 4u - 0x80000000u], 1.5f + (float)k);
+            store_f32(&s_memory[p0 + JPA_PTCL_AXIS   + (uint32_t)k * 4u - 0x80000000u], 0.75f + (float)k);
+            store_f32(&s_memory[p1 + JPA_PTCL_GLOBAL + (uint32_t)k * 4u - 0x80000000u], 48.0f + (float)k);
+        }
+        store_f32(&s_memory[p0 + JPA_PTCL_SCL + 0u - 0x80000000u], 1.5f);
+        store_f32(&s_memory[p0 + JPA_PTCL_SCL + 4u - 0x80000000u], 2.5f);
+        store_f32(&s_memory[p0 + JPA_PTCL_AOUT - 0x80000000u], 0.8f);
+        store_be32(&s_memory[p0 + JPA_PTCL_PRM - 0x80000000u], 0x50607080u);
+        store_be32(&s_memory[p0 + JPA_PTCL_ENV - 0x80000000u], 0xC0D0E0F0u);
+        wr16_fast(&state, p0 + JPA_PTCL_ANGLE, 0x0100u);   /* wrapped +0x200 */
+        wr16_fast(&state, p0 + 0xC6u, 9u);                 /* tex anm advanced */
+        for (k = 0; k < 3; ++k) {
+            store_f32(&s_memory[emtr + JPA_EMTR_ETRS + (uint32_t)k * 4u - 0x80000000u], 108.0f + (float)k);
+            store_f32(&s_memory[emtr + JPA_EMTR_GTRN + (uint32_t)k * 4u - 0x80000000u], 208.0f + (float)k);
+        }
+        wr16_fast(&state, emtr + JPA_EMTR_EROT + 0u, (uint16_t)(-179)); /* +2 deg */
+        wr16_fast(&state, emtr + JPA_EMTR_EROT + 2u, 14u);
+        wr16_fast(&state, emtr + JPA_EMTR_EROT + 4u, 24u);
+        store_be32(&s_memory[emtr + JPA_EMTR_DCLR + 0u - 0x80000000u], 0x6080A0C0u);
+        store_f32(&s_memory[emtr + JPA_EMTR_TICK - 0x80000000u], 8.0f);
+        store_be32(&s_memory[emtr + JPA_EMTR_GCLR + 0u - 0x80000000u], 0x31425364u);
+        wr16_fast(&state, emtr + 0x160u, 6u);
+
+        /* ---- R at alpha 0.5: every continuous field is at its midpoint - */
+        jpa_rframe(&state, 0.5f);
+
+        rd_f32_arr(&state, p0 + JPA_PTCL_GLOBAL, pos, 3u);
+        if (pos[0] != 24.0f || pos[2] != 26.0f) return 306;
+        rd_f32_arr(&state, p0 + JPA_PTCL_LOCAL, pos, 3u);
+        if (pos[0] != 12.0f) return 307;
+        rd_f32_arr(&state, p0 + JPA_PTCL_GLOBAL + 0xCu, pos, 3u);  /* velocity */
+        if (pos[0] != 1.0f || pos[1] != 2.0f) return 308;
+        rd_f32_arr(&state, p0 + JPA_PTCL_AXIS, pos, 3u);
+        if (pos[0] != 0.5f || pos[1] != 1.5f) return 309;
+        rd_f32_arr(&state, p0 + JPA_PTCL_SCL, s2, 2u);
+        if (s2[0] != 1.25f || s2[1] != 2.25f) return 310;
+        memcpy(&f, &(uint32_t){load_be32(&s_memory[p0 + JPA_PTCL_AOUT - 0x80000000u])}, 4u);
+        if (f != 0.6f) return 311;
+        w = load_be32(&s_memory[p0 + JPA_PTCL_PRM - 0x80000000u]);
+        if (w != 0x30405060u) return 312;      /* per-channel midpoint */
+        w = load_be32(&s_memory[p0 + JPA_PTCL_ENV - 0x80000000u]);
+        if (w != 0xA0B0C0D0u) return 313;
+        if (rd16_fast(&state, p0 + JPA_PTCL_ANGLE) != 0x0000u) return 314; /* 0xFF00->0x0100 short way */
+        if (rd16_fast(&state, p0 + 0xC6u) != 9u) return 315;   /* tex idx stays live/discrete */
+        /* child-list particle lerps too */
+        rd_f32_arr(&state, p1 + JPA_PTCL_GLOBAL, pos, 3u);
+        if (pos[0] != 44.0f) return 316;
+        /* emitter state */
+        rd_f32_arr(&state, emtr + JPA_EMTR_ETRS, pos, 3u);
+        if (pos[0] != 104.0f) return 317;
+        rd_f32_arr(&state, emtr + JPA_EMTR_GTRN, pos, 3u);
+        if (pos[0] != 204.0f) return 318;
+        if (rd16_fast(&state, emtr + JPA_EMTR_EROT + 0u) != 180u) return 319; /* 179->-179 short way */
+        if (rd16_fast(&state, emtr + JPA_EMTR_EROT + 2u) != 12u) return 320;
+        w = load_be32(&s_memory[emtr + JPA_EMTR_DCLR - 0x80000000u]);
+        if (w != 0x406080A0u) return 321;
+        memcpy(&f, &(uint32_t){load_be32(&s_memory[emtr + JPA_EMTR_TICK - 0x80000000u])}, 4u);
+        if (f != 7.5f) return 322;
+        w = load_be32(&s_memory[emtr + JPA_EMTR_GCLR - 0x80000000u]);
+        if (w != 0x21324354u) return 323;      /* rounded per channel */
+        rd_f32_arr(&state, emtr + JPA_EMTR_GROT, pos, 3u);
+        if (pos[0] != 0.5f) return 324;        /* static matrix unchanged */
+        if (rd16_fast(&state, emtr + 0x160u) != 6u) return 325; /* mDraw.mTexIdx discrete */
+
+        /* ---- restore: next L entry writes live values back ------------- */
+        jpa_lframe(&state);
+        rd_f32_arr(&state, p0 + JPA_PTCL_GLOBAL, pos, 3u);
+        if (pos[0] != 28.0f) return 326;
+        w = load_be32(&s_memory[p0 + JPA_PTCL_PRM - 0x80000000u]);
+        if (w != 0x50607080u) return 327;
+        if (rd16_fast(&state, p0 + JPA_PTCL_ANGLE) != 0x0100u) return 328;
+        memcpy(&f, &(uint32_t){load_be32(&s_memory[emtr + JPA_EMTR_TICK - 0x80000000u])}, 4u);
+        if (f != 8.0f) return 329;
+        if (rd16_fast(&state, emtr + JPA_EMTR_EROT + 0u) != (uint16_t)(-179)) return 330;
+
+        /* ---- lifetime mismatch = slot reuse -> skip --------------------- */
+        /* stored frame is 6 -> live 7 passes the frame key; the differing
+         * mLifeTime must still veto (a re-initialized slot at the same
+         * address is not the same particle). */
+        store_f32(&s_memory[p0 + JPA_PTCL_FRAME - 0x80000000u], 7.0f);
+        store_f32(&s_memory[p0 + JPA_PTCL_LIFE  - 0x80000000u], 99.0f);
+        for (k = 0; k < 3; ++k)
+            store_f32(&s_memory[p0 + JPA_PTCL_GLOBAL + (uint32_t)k * 4u - 0x80000000u], 77.0f + (float)k);
+        jpa_rframe(&state, 0.5f);
+        rd_f32_arr(&state, p0 + JPA_PTCL_GLOBAL, pos, 3u);
+        if (pos[0] != 77.0f) return 331;
+        store_f32(&s_memory[p0 + JPA_PTCL_LIFE  - 0x80000000u], 30.0f);
+
+        /* ---- StopCalc emitter: frozen tick still lerps ----------------- */
+        jpa_lframe(&state);   /* reseed at tick 8, gtrn restored to 208+k */
+        store_be32(&s_memory[emtr + JPA_EMTR_FLAGS - 0x80000000u], JPA_EMTRFL_STOPCALC);
+        for (k = 0; k < 3; ++k)   /* callback still moved the transform */
+            store_f32(&s_memory[emtr + JPA_EMTR_GTRN + (uint32_t)k * 4u - 0x80000000u], 216.0f + (float)k);
+        jpa_rframe(&state, 0.5f);
+        rd_f32_arr(&state, emtr + JPA_EMTR_GTRN, pos, 3u);
+        if (pos[0] != 212.0f) return 332;
+        /* recycled emitter: fresh L window, then the slot presents a NEW
+         * emitter (tick restarted at 0, flags cleared) -> no lerp */
+        jpa_lframe(&state);   /* restore + reseed (tick 8, gtrn 216+k) */
+        store_be32(&s_memory[emtr + JPA_EMTR_FLAGS - 0x80000000u], 0x30u);
+        store_f32(&s_memory[emtr + JPA_EMTR_TICK - 0x80000000u], 0.0f);
+        for (k = 0; k < 3; ++k)
+            store_f32(&s_memory[emtr + JPA_EMTR_GTRN + (uint32_t)k * 4u - 0x80000000u], 400.0f + (float)k);
+        jpa_rframe(&state, 0.5f);
+        rd_f32_arr(&state, emtr + JPA_EMTR_GTRN, pos, 3u);
+        if (pos[0] != 400.0f) return 333;
+        store_be32(&s_memory[emtr + JPA_EMTR_FLAGS - 0x80000000u], 0u);
+        store_f32(&s_memory[emtr + JPA_EMTR_TICK - 0x80000000u], 8.0f);
+
+        /* ---- FULL=0 falls back to position-only ------------------------ */
+        jpa_lframe(&state);   /* reseed under FULL (p0 frame 7, pos 77+k) */
+        s_jpa_full = 0u;
+        jpa_lframe(&state);   /* reseed under pos-only mode */
+        store_f32(&s_memory[p0 + JPA_PTCL_FRAME - 0x80000000u], 8.0f);
+        for (k = 0; k < 3; ++k)
+            store_f32(&s_memory[p0 + JPA_PTCL_GLOBAL + (uint32_t)k * 4u - 0x80000000u], 90.0f + (float)k);
+        store_f32(&s_memory[p0 + JPA_PTCL_SCL - 0x80000000u], 9.0f);
+        store_be32(&s_memory[p0 + JPA_PTCL_PRM - 0x80000000u], 0xFFEEDDCCu);
+        jpa_rframe(&state, 0.5f);
+        rd_f32_arr(&state, p0 + JPA_PTCL_GLOBAL, pos, 3u);
+        /* L reseed read pos (77+k) as endpoint, live (90+k): mid = 83.5+k */
+        if (pos[0] != 83.5f || pos[1] != 84.5f) return 335;
+        rd_f32_arr(&state, p0 + JPA_PTCL_SCL, s2, 2u);
+        if (s2[0] != 9.0f) return 336;         /* scale NOT lerped */
+        w = load_be32(&s_memory[p0 + JPA_PTCL_PRM - 0x80000000u]);
+        if (w != 0xFFEEDDCCu) return 337;      /* color NOT lerped */
+
+        /* ---- FIX=0 disables the whole path ----------------------------- */
+        jpa_lframe(&state);
+        s_jpa_fix = 0u;
+        s_jpa_full = 1u;
+        jpa_lframe(&state);
+        store_f32(&s_memory[p0 + JPA_PTCL_FRAME - 0x80000000u], 11.0f);
+        for (k = 0; k < 3; ++k)
+            store_f32(&s_memory[p0 + JPA_PTCL_GLOBAL + (uint32_t)k * 4u - 0x80000000u], 50.0f + (float)k);
+        jpa_rframe(&state, 0.5f);
+        rd_f32_arr(&state, p0 + JPA_PTCL_GLOBAL, pos, 3u);
+        if (pos[0] != 50.0f) return 338;       /* untouched */
+        s_jpa_fix = 1u;
+        jpa_lframe(&state);
+        memset(&s_memory[mgr - 0x80000000u], 0, 0x800u);
+        store_be32(&s_memory[JPA_MGR_EA - 0x80000000u], 0u);
+    }
+
     /* ================= H1: list-heap seeding ==============================*/
     {
         uint32_t saved_tick = load_be32(&s_memory[display + JFW_OFF_TICKRATE - 0x80000000u]);
