@@ -195,6 +195,7 @@ static uint32_t s_sea_fix = 1;        /* MODERNGEKKO_F60_SEA_FIX — sea anim co
 static uint32_t s_light_fix = 1;      /* MODERNGEKKO_F60_LIGHT_FIX — R-frame relight under lerped view  */
 static uint32_t s_foliage_fix = 1;    /* MODERNGEKKO_F60_FOLIAGE_FIX — grass/flower/tree mtx lerp        */
 static uint32_t s_jpa_fix = 1;        /* MODERNGEKKO_F60_JPA_FIX — particle mGlobalPosition lerp        */
+static uint32_t s_shadow_interp = 1;  /* MODERNGEKKO_F60_SHADOW_INTERP — shadow matrix lerp (D5)  */
 static uint32_t s_fadelog = 0;        /* MODERNGEKKO_F60_FADELOG — fade-state forensics           */
 static uint32_t s_rnglog = 0;         /* MODERNGEKKO_F60_RNGLOG — cM_rnd state per L-frame        */
 static uint32_t s_rng_lcount = 0;     /* L-frames logged by RNGLOG (capped at 400)                */
@@ -311,6 +312,7 @@ static void emu_prio_restore(void)
 static void emu_prio_apply(void)   {}
 static void emu_prio_restore(void) {}
 #endif
+static uint64_t s_c_shd_ns  = 0, s_c_shd_n  = 0;  /* shd_ctrl_draw_entry (L+R) */
 
 /* Forward: env/config reader — runs at mod load, before guest starts. */
 static void frame60_accum_on_load(const ModernGekkoModHostApi* api)
@@ -439,6 +441,8 @@ static void frame60_accum_on_load(const ModernGekkoModHostApi* api)
         if (fol) s_foliage_fix = (fol[0] != '0');
         const char* jp = getenv("MODERNGEKKO_F60_JPA_FIX");
         if (jp) s_jpa_fix = (jp[0] != '0');
+        const char* si = getenv("MODERNGEKKO_F60_SHADOW_INTERP");
+        if (si) s_shadow_interp = (si[0] != '0');
         const char* fe = getenv("MODERNGEKKO_F60_FORCE_ELSE");
         if (fe && fe[0] == '1')
             s_force_else = 1;
@@ -525,6 +529,12 @@ static void camview_rframe(CPUState* state);
 static void camview_install(CPUState* state, float alpha);
 static void camview_restore(CPUState* state, uint32_t view);
 static void jpa_lframe(CPUState* state);
+/* D5 shadow interp — defined in the D5 section; on_void_render_gate call-outs. */
+#define SHD_CTRL_DRAW    0x80084EF0u   /* dDlst_shadowControl_c::draw      */
+#define SHD_CTRL_SETSMPL 0x80085274u   /* dDlst_shadowControl_c::setSimple */
+static void shd_ctrl_draw_entry(CPUState* st);
+static void on_shd_setsimple(CPUState* st);
+static void on_shd_draw_return(CPUState* st);
 static void jpa_rframe(CPUState* state, float alpha);
 static void f60_reset_runtime_state(CPUState* state);
 static void vilog_note_eye(CPUState* state);
@@ -557,6 +567,8 @@ static uint64_t s_dbg_caminj;         /* camera view/proj mid-view installs */
 static uint64_t s_dbg_lightgate;      /* dKy_setLight R-frame intercepts (skip or relight) */
 static uint64_t s_dbg_folinj;         /* foliage element matrices lerped on R-frames        */
 static uint64_t s_dbg_jpainj;         /* JPA particle positions lerped on R-frames          */
+static uint64_t s_dbg_shdinj;         /* shadow entries lerped on R-frames (D5)             */
+static uint64_t s_dbg_shdsnap;        /* shadow snapshots taken on L-frames                 */
 static uint32_t s_hist_used;
 static uint32_t s_matrices_injected = 0; /* live guest arrays currently hold our lerp */
 
@@ -881,6 +893,9 @@ static void frame60_accum_decide(CPUState* state, uint32_t* disp_out)
                     (unsigned)s_painter_bytes, (unsigned)s_fcdw_bytes,
                     (unsigned long long)s_dbg_folinj,
                     (unsigned long long)s_dbg_jpainj);
+                fprintf(stderr, "[f60] shd_inj=%llu shd_snap=%llu\n",
+                    (unsigned long long)s_dbg_shdinj,
+                    (unsigned long long)s_dbg_shdsnap);
             }
         }
         /* The probe walks the fifo backward one word per external read —
@@ -1625,7 +1640,7 @@ static void frame60_cost_report(void)
         "[f60-cost] wL=%u/%.3fms wR=%u/%.3fms wO=%u/%.3fms wtbL=%.0f wtbR=%.0f "
         "Rw=%.1f%% | cumL=%.3fms cumR=%.3fms cumO=%.3fms cRw=%.1f%% "
         "cumLN=%llu cumRN=%llu | "
-        "snap=%.1fus(%llu) refr=%.1fus(%llu) inj=%.1fus(%llu) frep=%.1fus(%llu)\n",
+        "snap=%.1fus(%llu) refr=%.1fus(%llu) inj=%.1fus(%llu) frep=%.1fus(%llu) shd=%.1fus(%llu)\n",
         s_wl_n, w_l_ms, s_wr_n, w_r_ms, s_wo_n, w_o_ms, w_l_tb, w_r_tb,
         w_rw, c_l_ms, c_r_ms, c_o_ms, c_rw,
         (unsigned long long)s_cost_l_n, (unsigned long long)s_cost_r_n,
@@ -1636,7 +1651,9 @@ static void frame60_cost_report(void)
         s_c_inj_n ? (double)s_c_inj_ns / (double)s_c_inj_n / 1.0e3 : 0.0,
         (unsigned long long)s_c_inj_n,
         s_c_frep_n ? (double)s_c_frep_ns / (double)s_c_frep_n / 1.0e3 : 0.0,
-        (unsigned long long)s_c_frep_n);
+        (unsigned long long)s_c_frep_n,
+        s_c_shd_n ? (double)s_c_shd_ns / (double)s_c_shd_n / 1.0e3 : 0.0,
+        (unsigned long long)s_c_shd_n);
     /* Second line: the finer R/L mod-work buckets + hook-call volume. The
      * buckets together bound "mod host work"; frame wall minus their sum is
      * guest code + dispatch + fifo/gpu waits (separate attribution). */
@@ -2215,6 +2232,18 @@ static void on_fcdw_gate(CPUState* state)
 static void on_void_render_gate(CPUState* state)
 {
     ++s_hook_calls;
+    /* D5: the shadow draw hook shares this gate (no second registration at
+     * 0x80084EF0) — snapshot on the L entry, lerp+inject on the R entry.
+     * Injected fields are restored by the paired return hook. */
+    if (state->pc == SHD_CTRL_DRAW) {
+        if (s_cost) {
+            const uint64_t t0 = host_now_ns();
+            shd_ctrl_draw_entry(state);
+            s_c_shd_ns += host_now_ns() - t0; ++s_c_shd_n;
+        } else {
+            shd_ctrl_draw_entry(state);
+        }
+    }
     if (s_enabled && s_split_mode && !s_logic_this_frame) {
         if (s_r_dup) {
             state->pc = state->lr;
@@ -4823,6 +4852,425 @@ static void jpa_rframe(CPUState* st, float alpha)
     jpa_walk(st, 1, alpha);
 }
 
+/* ========== D5 shadow-matrix interpolation (MODERNGEKKO_F60_SHADOW_INTERP) ==
+ * Both shadow kinds step at 30 Hz because every matrix they consume is baked
+ * during fpcDw (L-only) and the R-frame Painter reads them raw:
+ *
+ *   dDlst_shadowSimple_c::set  (0x80084AC8, d_drawlist.cpp:1462-1505) bakes
+ *     mVolumeMtx = view*worldVol (:1467) and mMtx = view*worldShadow (:1497)
+ *     plus mAlpha = f(pos distance). The view is j3dSys.mViewMtx AT SET TIME
+ *     — the PREVIOUS iteration's camera — so on R-frames blobs are pinned to
+ *     a stale pose AND a stale camera (double error vs lerped geometry).
+ *   dDlst_shadowReal_c::set/set2 (0x8008450C/0x800846C8 via ::setReal/
+ *     setReal2/addReal) run setShadowRealMtx (0x800841B0): light-facing view
+ *     mViewMtx +0x08, ortho mRenderProjMtx +0x38 (Mtx44), receiver proj
+ *     mReceiverProjMtx +0x78 — all LIGHT-space (no camera component), so the
+ *     projected blob anchors at the L-tick caster pose while the model is
+ *     interpolated.
+ *
+ * Consumption is FIFO matrix values only (COMMON rule 8 safe — no display-
+ * list/array pointer patching): dDlst_shadowSimple_c::draw loads mVolumeMtx/
+ * mMtx via GXLoadPosMtxImm (:1423/:1431) and mAlpha into a tev color;
+ * dDlst_shadowReal_c::draw concat-loads inv(mViewMtx)*inv(mRenderProjMtx)
+ * *live j3dSys view into PNMTX1 (:1156-1165 — the volume transform picks up
+ * the R-frame camera for free) and mReceiverProjMtx via GXLoadTexMtxImm
+ * (:1180) which steers the blob's UV over the 30-Hz depth texture. mAlpha
+ * feeds tev alpha. All injected fields are restored at the return hook.
+ *
+ * Guest layout (verified include/d/d_drawlist.h:292-303,345-404 +
+ * config/GZLE01/symbols.txt):
+ *   control: mRealNum +0x00, mSimpleNum +0x01, mSimple[128] +0x04 stride 0x68,
+ *            mNextID +0x3404, mReal[8] +0x3408 stride 0x2544 (struct 0x15E28)
+ *   simple : mAlpha +0x00, mpTexObj +0x04, mVolumeMtx +0x08, mMtx +0x38
+ *   real   : mState +0x00 (1=draw this tick), mAlpha +0x02, mModelNum +0x03,
+ *            mKey +0x04 (persistent id from mNextID), mViewMtx +0x08,
+ *            mRenderProjMtx +0x38, mReceiverProjMtx +0x78, mpModels +0x24DC
+ *   j3dSys.mViewMtx = 0x803EDA58 +0x00 (symbols.txt) — the view set() bakes.
+ *
+ * Identity: simple shadows are order-only entries in mSimple[]; setSimple's
+ * pos arg is the actor's own position field for the common dComIfGd_setShadow
+ * wrapper (actor->current.pos — stable per actor). The setSimple hook records
+ * slot->posPtr into s_shd_id_live while the build runs; the L-entry snapshot
+ * copies it as the prev-build identity. Match = same pos ptr + L1
+ * translation delta < SHD_TELEPORT (covers the stack-local &pos reuse in
+ * dComIfGd_setShadow where distinct callers share one stack address —
+ * different callers sit at different frame depths, and same-depth callers
+ * that collide get caught by the distance guard). Slot count/index changes
+ * between builds are handled by the ptr-keyed search, not positional match.
+ * Real shadows carry a persistent mKey + model pointer — exact identity.
+ *
+ * Interpolation: simple endpoints are UN-BAKED to world space —
+ * W = inv(bakeView) * stored — then lerped and re-baked with the R-frame's
+ * actual view (r4 at the draw hook, the same matrix draw() uploads at
+ * :1554). This is an exact decomposition, not a view*world lerp: rotation/
+ * scale components stay correct because the bake view factors out exactly.
+ * Unmatched entries (appeared this tick) get W = live and still gain the
+ * camera re-bake. Real matrices are lerped element-wise: between adjacent
+ * ticks the light frame varies only by caster motion (rotation is the
+ * quasi-static sun direction), so the element-wise mid is a faithful rigid
+ * midpoint — same convention as J3D joint lerps and Dusklight's
+ * record_final_mtx. Camera cuts / noinject / dup frames skip injection —
+ * the live values are the newest endpoint and draw unchanged.
+ *
+ * Residual: the real-shadow DEPTH texture still renders at 30 Hz — the
+ * silhouette pose steps while its projected position tracks. Re-running
+ * imageDraw on R-frames stays gated: imageDraw calls J3DModel::viewCalc per
+ * shadowed model, which rewrites the very draw-matrix buffers Stage-B
+ * injected — its write-set proof is still open (see report). */
+/* SHD_CTRL_DRAW / SHD_CTRL_SETSMPL are #defined at the forward-decl block
+ * (on_void_render_gate needs SHD_CTRL_DRAW before this section). */
+#define J3DSYS_VIEW_EA   0x803EDA58u   /* j3dSys.mViewMtx (+0x00)          */
+#define SHDC_SIMPLE_NUM  0x01u
+#define SHDC_SIMPLE_ARR  0x04u
+#define SHDC_REAL_ARR    0x3408u
+#define SHDC_SPAN        0x15E28u      /* sizeof(dDlst_shadowControl_c)    */
+#define SHDS_ALPHA  0x00u
+#define SHDS_VOL    0x08u
+#define SHDS_MTX    0x38u
+#define SHDS_SIZE   0x68u
+#define SHDR_STATE  0x00u
+#define SHDR_ALPHA  0x02u
+#define SHDR_KEY    0x04u
+#define SHDR_VIEW   0x08u
+#define SHDR_PROJ   0x38u
+#define SHDR_RECV   0x78u
+#define SHDR_MODEL0 0x24DCu
+#define SHDR_SIZE   0x2544u
+#define SHD_SIMPLE_MAX 128u
+#define SHD_REAL_MAX   8u
+#define SHD_TELEPORT   300.0f          /* L1 translation cap for a live match */
+
+typedef struct {
+    uint32_t key, model0, used;
+    uint8_t  alpha;
+    J3DMtx   view, recv;
+    Mtx44f   proj;
+} ShdRealEnt;
+
+static J3DMtx   s_shd_wvol[SHD_SIMPLE_MAX], s_shd_wmtx[SHD_SIMPLE_MAX];
+static J3DMtx   s_shd_bvol[SHD_SIMPLE_MAX], s_shd_bmtx[SHD_SIMPLE_MAX];
+static uint32_t s_shd_id_snap[SHD_SIMPLE_MAX];
+static uint32_t s_shd_id_live[SHD_SIMPLE_MAX]; /* slot->posPtr, current build */
+static uint8_t  s_shd_a_snap[SHD_SIMPLE_MAX], s_shd_a_bak[SHD_SIMPLE_MAX];
+static uint8_t  s_shd_sinj[SHD_SIMPLE_MAX];
+static uint32_t s_shd_snum = 0;             /* entries in the L snapshot     */
+static J3DMtx   s_shd_bake;                 /* j3dSys view of the last build */
+static uint32_t s_shd_bake_ok = 0;
+static ShdRealEnt s_shd_rprev[SHD_REAL_MAX];
+static ShdRealEnt s_shd_rbak[SHD_REAL_MAX];
+static uint8_t  s_shd_rinj[SHD_REAL_MAX];
+static uint32_t s_shd_self = 0, s_shd_armed = 0, s_shd_prev = 0;
+
+/* out = a * b — affine 3x4 concat (mDoMtx_stack_c::concat equivalent). */
+static void shd_mtx_concat(const J3DMtx* a, const J3DMtx* b, J3DMtx* out)
+{
+    float o[3][4];
+    int r, c;
+    for (r = 0; r < 3; ++r) {
+        for (c = 0; c < 3; ++c)
+            o[r][c] = a->m[r][0] * b->m[0][c] + a->m[r][1] * b->m[1][c] +
+                      a->m[r][2] * b->m[2][c];
+        o[r][3] = a->m[r][0] * b->m[0][3] + a->m[r][1] * b->m[1][3] +
+                  a->m[r][2] * b->m[2][3] + a->m[r][3];
+    }
+    memcpy(out->m, o, sizeof(o));
+}
+
+/* General affine inverse (mDoMtx_inverse equivalent): 3x3 adjugate over
+ * determinant — bake views are rigid but shadow volumes carry scale, and
+ * the inverse must round-trip whatever set() produced. 0 = singular. */
+static int shd_mtx_inverse(const J3DMtx* in, J3DMtx* out)
+{
+    const float (*m)[4] = in->m;
+    const float det =
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+        m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+        m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    float r[3][3], id;
+    int i;
+    if (!isfinite(det) || fabsf(det) < 1e-12f)
+        return 0;
+    id = 1.0f / det;
+    r[0][0] = (m[1][1] * m[2][2] - m[1][2] * m[2][1]) * id;
+    r[0][1] = (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * id;
+    r[0][2] = (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * id;
+    r[1][0] = (m[1][2] * m[2][0] - m[1][0] * m[2][2]) * id;
+    r[1][1] = (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * id;
+    r[1][2] = (m[0][2] * m[1][0] - m[0][0] * m[1][2]) * id;
+    r[2][0] = (m[1][0] * m[2][1] - m[1][1] * m[2][0]) * id;
+    r[2][1] = (m[0][1] * m[2][0] - m[0][0] * m[2][1]) * id;
+    r[2][2] = (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * id;
+    for (i = 0; i < 3; ++i) {
+        out->m[i][0] = r[i][0];
+        out->m[i][1] = r[i][1];
+        out->m[i][2] = r[i][2];
+        out->m[i][3] = -(r[i][0] * m[0][3] + r[i][1] * m[1][3] +
+                         r[i][2] * m[2][3]);
+    }
+    return 1;
+}
+
+/* setSimple entry hook (0x80085274): r3 = control, r4 = cXyz* pos — the
+ * identity key — r3+mSimpleNum = the slot the call is about to claim. Runs
+ * inside fpcDw, i.e. L-frames only. Also refreshes the pending bake view:
+ * every set() bakes the j3dSys view live at call time. */
+static void on_shd_setsimple(CPUState* st)
+{
+    const uint32_t ctrl = (uint32_t)st->gpr[3];
+    uint32_t slot;
+    if (!(s_enabled && s_split_mode && s_shadow_interp))
+        return;
+    if (!in_ram(st, ctrl, SHDC_SPAN))
+        return;
+    slot = rd8_fast(st, ctrl + SHDC_SIMPLE_NUM);
+    if (slot < SHD_SIMPLE_MAX)
+        s_shd_id_live[slot] = (uint32_t)st->gpr[4];
+    if (in_ram(st, J3DSYS_VIEW_EA, 48u)) {
+        rd_f32_arr(st, J3DSYS_VIEW_EA, s_shd_bake.m[0], 12u);
+        s_shd_bake_ok = 1;
+    }
+}
+
+/* L-entry snapshot: the entries about to draw are the prev endpoint. Simple
+ * matrices are un-baked to world space NOW (inverse work lands on the L
+ * frame, off the R-frame's hot path); ids + alpha + real light matrices are
+ * captured verbatim. Real matrices are light-space (cMtx_lookAt around the
+ * parallel-light vector — the camera view enters only at draw() through
+ * j3dSys), so they snapshot/inject fine with no bake view at all; gating
+ * the whole snapshot on s_shd_bake_ok would disable real-shadow interp in
+ * every scene where no setSimple ran this tick (Link's own shadow is
+ * real-type via dComIfGd_setShadow's setReal-first path). */
+static void shd_snapshot(CPUState* st, uint32_t ctrl)
+{
+    J3DMtx ibv, v;
+    uint32_t num, i, j;
+    if (!(s_enabled && s_split_mode && s_shadow_interp &&
+          s_rframe_render && s_j3d_interp))
+        return;
+    if (!in_ram(st, ctrl, SHDC_SPAN)) {
+        s_shd_prev = 0;
+        return;
+    }
+    s_shd_self = ctrl;
+    num = rd8_fast(st, ctrl + SHDC_SIMPLE_NUM);
+    if (num > SHD_SIMPLE_MAX)
+        num = SHD_SIMPLE_MAX;
+    s_shd_snum = 0;
+    if (num && s_shd_bake_ok && shd_mtx_inverse(&s_shd_bake, &ibv)) {
+        s_shd_snum = num;
+        for (i = 0; i < num; ++i) {
+            const uint32_t e = ctrl + SHDC_SIMPLE_ARR + i * SHDS_SIZE;
+            rd_f32_arr(st, e + SHDS_VOL, v.m[0], 12u);
+            shd_mtx_concat(&ibv, &v, &s_shd_wvol[i]);
+            rd_f32_arr(st, e + SHDS_MTX, v.m[0], 12u);
+            shd_mtx_concat(&ibv, &v, &s_shd_wmtx[i]);
+            s_shd_a_snap[i] = (uint8_t)rd8_fast(st, e + SHDS_ALPHA);
+            s_shd_id_snap[i] = s_shd_id_live[i];
+        }
+    }
+    for (j = 0; j < SHD_REAL_MAX; ++j) {
+        const uint32_t e = ctrl + SHDC_REAL_ARR + j * SHDR_SIZE;
+        ShdRealEnt* r = &s_shd_rprev[j];
+        if (rd8_fast(st, e + SHDR_STATE) != 1u) {
+            r->used = 0;
+            continue;
+        }
+        r->used = 1;
+        r->key = rd32_fast(st, e + SHDR_KEY);
+        r->model0 = rd32_fast(st, e + SHDR_MODEL0);
+        r->alpha = (uint8_t)rd8_fast(st, e + SHDR_ALPHA);
+        rd_f32_arr(st, e + SHDR_VIEW, r->view.m[0], 12u);
+        rd_f32_arr(st, e + SHDR_PROJ, &r->proj.m[0][0], 16u);
+        rd_f32_arr(st, e + SHDR_RECV, r->recv.m[0], 12u);
+    }
+    s_shd_prev = 1;
+    ++s_dbg_shdsnap;
+}
+
+/* R-entry injection: live entries are the curr endpoint (this slot's fpcDw
+ * rebuilt them after the L snapshot). Every written field is backed up for
+ * the return-hook restore. viewptr = draw()'s Mtx arg (r4) — the actual
+ * camera matrix this pass uploads, already lerped by camview_install. */
+static void shd_inject(CPUState* st, uint32_t ctrl, uint32_t viewptr)
+{
+    J3DMtx vr, ibv;
+    uint8_t used[SHD_SIMPLE_MAX];
+    uint32_t num, i, j;
+    int do_simple = 0;
+    const float alpha = s_interp_alpha;
+    if (!(s_enabled && s_split_mode && s_shadow_interp &&
+          s_rframe_render && s_j3d_interp))
+        return;
+    if (s_r_dup || s_noinject || s_fol_cut)
+        return;
+    if (alpha <= 0.0f || alpha >= 1.0f)
+        return;
+    if (!s_shd_prev)
+        return;
+    if (!in_ram(st, ctrl, SHDC_SPAN))
+        return;
+    s_shd_self = ctrl;
+    memset(s_shd_sinj, 0, sizeof(s_shd_sinj));
+    memset(s_shd_rinj, 0, sizeof(s_shd_rinj));
+    num = rd8_fast(st, ctrl + SHDC_SIMPLE_NUM);
+    if (num > SHD_SIMPLE_MAX)
+        num = SHD_SIMPLE_MAX;
+    /* Simples need the bake view (to un-bake live matrices) and this pass's
+     * view arg (to re-bake). Reals are light-space and run without either —
+     * do not let a simple-free tick disable real-shadow interpolation. */
+    if (num && s_shd_bake_ok && in_ram(st, viewptr, 48u)) {
+        rd_f32_arr(st, viewptr, vr.m[0], 12u);
+        if (shd_mtx_inverse(&s_shd_bake, &ibv))
+            do_simple = 1;  /* s_shd_bake = THIS build's bake view */
+    }
+    memset(used, 0, sizeof(used));
+    for (i = 0; do_simple && i < num; ++i) {
+        const uint32_t e = ctrl + SHDC_SIMPLE_ARR + i * SHDS_SIZE;
+        J3DMtx lv, lm, wv, wm, mv, mm, iv, im;
+        uint32_t match = 0xFFFFFFFFu, id;
+        rd_f32_arr(st, e + SHDS_VOL, lv.m[0], 12u);
+        rd_f32_arr(st, e + SHDS_MTX, lm.m[0], 12u);
+        shd_mtx_concat(&ibv, &lv, &wv);   /* live matrices -> world space */
+        shd_mtx_concat(&ibv, &lm, &wm);
+        s_shd_bvol[i] = lv;               /* backup live values verbatim  */
+        s_shd_bmtx[i] = lm;
+        s_shd_a_bak[i] = (uint8_t)rd8_fast(st, e + SHDS_ALPHA);
+        id = s_shd_id_live[i];
+        if (id) {
+            /* Nearest-translation match among same-ptr candidates: several
+             * actors can share the dComIfGd_setShadow stack-local &pos —
+             * pairing each live entry with its closest prev position beats
+             * first-fit (wrong pairing shows as a cross-lerped shadow). */
+            float best = SHD_TELEPORT;
+            for (j = 0; j < s_shd_snum; ++j) {
+                float dx, dy, dz, d;
+                if (used[j] || s_shd_id_snap[j] != id)
+                    continue;
+                dx = wv.m[0][3] - s_shd_wvol[j].m[0][3];
+                dy = wv.m[1][3] - s_shd_wvol[j].m[1][3];
+                dz = wv.m[2][3] - s_shd_wvol[j].m[2][3];
+                d = fabsf(dx) + fabsf(dy) + fabsf(dz);
+                if (d < best) {
+                    best = d;
+                    match = j;
+                }
+            }
+            if (match != 0xFFFFFFFFu)
+                used[match] = 1;
+        }
+        if (match != 0xFFFFFFFFu) {
+            j3d_lerp_mtx(&s_shd_wvol[match], &wv, alpha, &mv, 1u);
+            j3d_lerp_mtx(&s_shd_wmtx[match], &wm, alpha, &mm, 1u);
+            {
+                const int a = (int)s_shd_a_snap[match] +
+                    (int)(alpha * ((float)s_shd_a_bak[i] -
+                                   (float)s_shd_a_snap[match]));
+                wr8_fast(st, e + SHDS_ALPHA,
+                         (uint32_t)(a < 0 ? 0 : (a > 255 ? 255 : a)));
+            }
+            ++s_dbg_shdinj;
+        } else {
+            mv = wv;   /* no prev endpoint: latest pose + camera re-bake */
+            mm = wm;
+        }
+        shd_mtx_concat(&vr, &mv, &iv);
+        shd_mtx_concat(&vr, &mm, &im);
+        wr_f32_arr(st, e + SHDS_VOL, iv.m[0], 12u);
+        wr_f32_arr(st, e + SHDS_MTX, im.m[0], 12u);
+        s_shd_sinj[i] = 1;
+        s_shd_armed = 1;
+    }
+    for (j = 0; j < SHD_REAL_MAX; ++j) {
+        const uint32_t e = ctrl + SHDC_REAL_ARR + j * SHDR_SIZE;
+        const ShdRealEnt* p = &s_shd_rprev[j];
+        ShdRealEnt* b = &s_shd_rbak[j];
+        J3DMtx iv, ir;
+        Mtx44f ip;
+        float dt;
+        int r, c, a;
+        if (rd8_fast(st, e + SHDR_STATE) != 1u)
+            continue;
+        b->key = rd32_fast(st, e + SHDR_KEY);
+        b->model0 = rd32_fast(st, e + SHDR_MODEL0);
+        b->alpha = (uint8_t)rd8_fast(st, e + SHDR_ALPHA);
+        rd_f32_arr(st, e + SHDR_VIEW, b->view.m[0], 12u);
+        rd_f32_arr(st, e + SHDR_PROJ, &b->proj.m[0][0], 16u);
+        rd_f32_arr(st, e + SHDR_RECV, b->recv.m[0], 12u);
+        if (!p->used || p->key != b->key || p->model0 != b->model0)
+            continue;   /* slot claimed by a different shadow this tick */
+        dt = fabsf(b->view.m[0][3] - p->view.m[0][3]) +
+             fabsf(b->view.m[1][3] - p->view.m[1][3]) +
+             fabsf(b->view.m[2][3] - p->view.m[2][3]);
+        if (dt > SHD_TELEPORT)
+            continue;
+        j3d_lerp_mtx(&p->view, &b->view, alpha, &iv, 1u);
+        j3d_lerp_mtx(&p->recv, &b->recv, alpha, &ir, 1u);
+        for (r = 0; r < 4; ++r)
+            for (c = 0; c < 4; ++c) {
+                const float v = p->proj.m[r][c] +
+                    alpha * (b->proj.m[r][c] - p->proj.m[r][c]);
+                ip.m[r][c] = isfinite(v) ? v : b->proj.m[r][c];
+            }
+        wr_f32_arr(st, e + SHDR_VIEW, iv.m[0], 12u);
+        wr_f32_arr(st, e + SHDR_PROJ, &ip.m[0][0], 16u);
+        wr_f32_arr(st, e + SHDR_RECV, ir.m[0], 12u);
+        a = (int)p->alpha + (int)(alpha * ((float)b->alpha - (float)p->alpha));
+        wr8_fast(st, e + SHDR_ALPHA,
+                 (uint32_t)(a < 0 ? 0 : (a > 255 ? 255 : a)));
+        s_shd_rinj[j] = 1;
+        s_shd_armed = 1;
+        ++s_dbg_shdinj;
+    }
+}
+
+/* Return hook (0x80084EF0): every field shd_inject wrote goes back to its
+ * live value — the same memory is consumed again by the next L Painter, and
+ * the real entries persist into imageDraw consumption as well. */
+static void on_shd_draw_return(CPUState* st)
+{
+    const uint32_t ctrl = s_shd_self;
+    uint32_t i, j;
+    if (!s_shd_armed)
+        return;
+    s_shd_armed = 0;
+    if (in_ram(st, ctrl, SHDC_SPAN)) {
+        for (i = 0; i < SHD_SIMPLE_MAX; ++i) {
+            const uint32_t e = ctrl + SHDC_SIMPLE_ARR + i * SHDS_SIZE;
+            if (!s_shd_sinj[i])
+                continue;
+            s_shd_sinj[i] = 0;
+            wr_f32_arr(st, e + SHDS_VOL, s_shd_bvol[i].m[0], 12u);
+            wr_f32_arr(st, e + SHDS_MTX, s_shd_bmtx[i].m[0], 12u);
+            wr8_fast(st, e + SHDS_ALPHA, (uint32_t)s_shd_a_bak[i]);
+        }
+        for (j = 0; j < SHD_REAL_MAX; ++j) {
+            const uint32_t e = ctrl + SHDC_REAL_ARR + j * SHDR_SIZE;
+            const ShdRealEnt* b = &s_shd_rbak[j];
+            if (!s_shd_rinj[j])
+                continue;
+            s_shd_rinj[j] = 0;
+            wr_f32_arr(st, e + SHDR_VIEW, b->view.m[0], 12u);
+            wr_f32_arr(st, e + SHDR_PROJ, &b->proj.m[0][0], 16u);
+            wr_f32_arr(st, e + SHDR_RECV, b->recv.m[0], 12u);
+            wr8_fast(st, e + SHDR_ALPHA, (uint32_t)b->alpha);
+        }
+    } else {
+        memset(s_shd_sinj, 0, sizeof(s_shd_sinj));
+        memset(s_shd_rinj, 0, sizeof(s_shd_rinj));
+    }
+}
+
+/* Call-out inside on_void_render_gate at 0x80084EF0 (the existing render
+ * gate already hooks this address — no second registration): L Painter ->
+ * snapshot, R Painter -> inject. */
+static void shd_ctrl_draw_entry(CPUState* st)
+{
+    if (s_logic_this_frame)
+        shd_snapshot(st, (uint32_t)st->gpr[3]);
+    else
+        shd_inject(st, (uint32_t)st->gpr[3], (uint32_t)st->gpr[4]);
+}
+
 /* ---- M1: shared runtime-state reset -----------------------------------------
  * Called on the split engage/disengage edges and from on_unload. Clears every
  * per-frame mutable static so a stale snapshot/lerp/armed-flag can never leak
@@ -4959,6 +5407,16 @@ static void f60_reset_runtime_state(CPUState* st)
     s_dbg_lightfix = s_dbg_lightbad = 0;
     s_dbg_fader_calls = 0;
     s_dbg_folinj = s_dbg_jpainj = 0;
+    s_dbg_shdinj = s_dbg_shdsnap = 0;
+    /* D5: a disengage edge can land between the R inject and the return
+     * restore — replay the restore, then drop the snapshot. */
+    if (st)
+        on_shd_draw_return(st);
+    s_shd_armed = 0;
+    s_shd_prev = 0;
+    s_shd_bake_ok = 0;
+    s_shd_self = 0;
+    s_shd_snum = 0;
     s_dbg_entrymd = s_dbg_calcent = s_dbg_calcret = 0;
     s_dbg_vcent = s_dbg_vcret = s_dbg_dtor = 0;
     fol_reset(&s_fol_grass);
@@ -5219,6 +5677,11 @@ static const ModernGekkoModHook hooks_interp[] = {
     RECOMP_HOOK_RETURN(0x800C05DCu, on_flower_draw_return),
     RECOMP_HOOK(0x8007960Cu, on_tree_draw_entry),       /* dTree_packet_c::draw   */
     RECOMP_HOOK_RETURN(0x8007960Cu, on_tree_draw_return),
+    /* D5 shadows: setSimple records per-slot identity + bake view (fires
+     * inside fpcDw only); the draw entry is an on_void_render_gate call-out
+     * (already hooked there), the return hook restores injected matrices. */
+    RECOMP_HOOK(SHD_CTRL_SETSMPL, on_shd_setsimple),    /* setSimple id/bake rec */
+    RECOMP_HOOK_RETURN(SHD_CTRL_DRAW, on_shd_draw_return),
 };
 
 /* Stale-entry purge: JKR free funnels, split into separately-armable groups.
