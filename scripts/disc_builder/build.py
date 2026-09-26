@@ -37,12 +37,39 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+# A just-written file or directory can stay briefly locked while real-time
+# antivirus scans it; an open or move that fails for that reason must not end
+# a ten-minute setup. Every such step retries for a bounded ~15 seconds.
+FILE_OP_ATTEMPTS = 6
+FILE_OP_DELAY = 0.5
+
+# Cold-tier (unprofiled actor) sources smaller than this compile at -O1
+# instead of -O0. -O1 folds -O0's literal emission down to roughly half the
+# code size; the cutoff keeps the giant single-function files at -O0 because
+# -O1's superlinear cost on them would stretch setup well past the budget.
+COLD_O1_LIMIT = 1536 * 1024
+
+
+def retry_file_op(operation, attempts=FILE_OP_ATTEMPTS, delay=FILE_OP_DELAY):
+    for attempt in range(attempts):
+        try:
+            return operation()
+        except OSError:
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(delay * (1 << attempt))
+
+
 def write_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+
+    def publish():
+        temporary.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+
+    retry_file_op(publish)
 
 
 class Builder:
@@ -86,12 +113,15 @@ class Builder:
     def run(self, command, name, cwd=None, extra_env=None):
         log = self.work / (name + ".log")
         env = dict(self.env, **(extra_env or {}))
-        with log.open("wb") as stream:
+        with retry_file_op(lambda: log.open("wb")) as stream:
             result = subprocess.run([str(v) for v in command], cwd=cwd, env=env,
                                     stdout=stream, stderr=subprocess.STDOUT,
                                     creationflags=0x08000000 if os.name == "nt" else 0)
         if result.returncode:
-            tail = log.read_text(encoding="utf-8", errors="replace")[-3000:]
+            try:
+                tail = log.read_text(encoding="utf-8", errors="replace")[-3000:]
+            except OSError:
+                tail = ""
             raise RuntimeError(f"{name} failed (exit {result.returncode}). See {log}\n{tail}")
         return log
 
@@ -249,11 +279,14 @@ class Builder:
         #    one-function-per-4096-instructions files it was two thirds of all
         #    compile time for no measurable speed.
         #  - every other actor file (enemies, bosses and props of places the
-        #    profiled play never visited, two thirds of the code): -O1 when it
-        #    is small, -O0 when it is one of the ~330 large ones. -O1 cost
-        #    grows much faster than linearly with a file's giant functions:
-        #    +0.4 s on a 400 KB file, +6 s on a 1.3 MB one, where -O0 takes
-        #    one to two seconds. Frame cost is the engine's: with every actor
+        #    profiled play never visited, two thirds of the code): -O1 below
+        #    COLD_O1_LIMIT, -O0 at or above it. -O1 cost grows much faster
+        #    than linearly with a file's giant functions (~s^2.8: +0.4 s on a
+        #    400 KB file, ~40 s on a 2 MB one, where -O0 takes one to two
+        #    seconds), so the biggest few stay at -O0 to keep setup near ten
+        #    minutes. -O0 literal emission doubles cold code size; folding
+        #    the mid-size files at -O1 shrinks the module meaningfully while
+        #    staying cheap. Frame cost is the engine's: with every actor
         #    file at -O0 (the ship included) sailing measured the same
         #    emulation time per field as the all -O2 + ThinLTO module, while
         #    the engine at -O0 was four times slower.
@@ -268,7 +301,7 @@ class Builder:
 
         def tier(source):
             if rels in source.parents and source.relative_to(self.work).as_posix() not in hot:
-                return small if source.stat().st_size < 512 * 1024 else large
+                return small if source.stat().st_size < COLD_O1_LIMIT else large
             return full
 
         def compile_one(index, source):
@@ -278,9 +311,9 @@ class Builder:
                 try:
                     self.run(command, f"compile-{index:04d}")
                     return output
-                except RuntimeError:
-                    # Real-time antivirus scanning the object clang just
-                    # wrote can make its final rename fail; try again.
+                except (RuntimeError, OSError):
+                    # Real-time antivirus scanning the object or log clang
+                    # just wrote can make its final rename fail; try again.
                     if attempt == 2:
                         raise
                     time.sleep(1 + 2 * attempt)
@@ -300,7 +333,8 @@ class Builder:
                 raise
         self.progress("Finishing game setup")
         response = self.work / "objects.rsp"
-        response.write_text("\n".join('"' + p.as_posix() + '"' for p in sorted(objects.glob("*.o"))))
+        retry_file_op(lambda: response.write_text(
+            "\n".join('"' + p.as_posix() + '"' for p in sorted(objects.glob("*.o")))))
         module = self.work / MODULE_NAME
         self.progress("Linking the game")
         self.run([self.cc, "-shared", "-fuse-ld=lld", "-o", module, "@" + str(response),
@@ -385,16 +419,25 @@ class Builder:
         if artifact.exists():
             artifact = self.work
         else:
-            self.work.rename(artifact)
+            try:
+                retry_file_op(lambda: self.work.rename(artifact),
+                              attempts=FILE_OP_ATTEMPTS, delay=FILE_OP_DELAY)
+            except OSError:
+                # The completed build directory is still usable where it is.
+                artifact = self.work
         self.work = artifact
         write_json(pointer, {"directory": artifact.name})
         self.publish(cache, artifact / MODULE_NAME, False)
 
     def publish(self, cache, module, hit):
         active = cache / "active-module.txt"
-        temporary = active.with_suffix(".tmp")
-        temporary.write_text(str(module) + "\n", encoding="utf-8")
-        os.replace(temporary, active)
+
+        def mark():
+            temporary = active.with_suffix(".tmp")
+            temporary.write_text(str(module) + "\n", encoding="utf-8")
+            os.replace(temporary, active)
+
+        retry_file_op(mark)
         self.progress("Ready to play", 1, 1, module=str(module), cache_hit=hit, finished=True)
 
 
