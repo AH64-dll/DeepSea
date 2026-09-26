@@ -146,6 +146,73 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(builder.generated, 0)
 
 
+class RetryTests(unittest.TestCase):
+    def test_retry_file_op_recovers_from_transient_locks(self):
+        import build as build_module
+        calls = []
+
+        def flaky():
+            calls.append(1)
+            if len(calls) < 3:
+                raise PermissionError("file locked by antivirus")
+            return "done"
+
+        self.assertEqual(build_module.retry_file_op(flaky, delay=0), "done")
+        self.assertEqual(len(calls), 3)
+
+    def test_retry_file_op_is_bounded(self):
+        import build as build_module
+        calls = []
+
+        def always():
+            calls.append(1)
+            raise PermissionError("file locked by antivirus")
+
+        with self.assertRaises(PermissionError):
+            build_module.retry_file_op(always, attempts=4, delay=0)
+        self.assertEqual(len(calls), 4)
+
+
+class LockedRenameTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="disc builder é ")
+        self.root = Path(self.temp.name)
+        self.builder = FakeBuilder(self.root)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def active(self):
+        return Path((self.root / "GZLE01/active-module.txt").read_text(encoding="utf-8").strip())
+
+    def _build_with_rename(self, fail_times):
+        from unittest.mock import patch
+        import build as build_module
+        real_rename = Path.rename
+        failures = []
+
+        def locked_rename(self, target):
+            if "build-" in self.name and len(failures) < fail_times:
+                failures.append(1)
+                raise PermissionError("build directory locked by antivirus")
+            return real_rename(self, target)
+
+        with patch.object(Path, "rename", locked_rename), \
+                patch.object(build_module, "FILE_OP_DELAY", 0):
+            self.builder.build()
+        return failures
+
+    def test_transiently_locked_build_directory_rename_is_retried(self):
+        failures = self._build_with_rename(2)
+        self.assertEqual(len(failures), 2)
+        self.assertEqual(self.active().read_bytes(), b"synthetic game module")
+
+    def test_permanently_locked_build_directory_uses_its_work_dir(self):
+        self._build_with_rename(99)
+        self.assertEqual(self.active().read_bytes(), b"synthetic game module")
+        self.assertTrue(self.active().parent.name.startswith("build-"))
+
+
 class RelcallTests(unittest.TestCase):
     # Synthetic chunk: one call with an in-chunk continuation label, one
     # call whose continuation label is missing, one bctr tail jump.
@@ -204,6 +271,13 @@ class ManifestTests(unittest.TestCase):
 
 
 class TierTests(unittest.TestCase):
+    def test_cold_o1_limit_stays_a_bounded_setup_budget_knob(self):
+        # The -O1/-O0 cutoff for unprofiled actor files is the setup-time
+        # budget dial; keep it a named constant in a sane range.
+        import build as build_module
+        self.assertGreaterEqual(build_module.COLD_O1_LIMIT, 512 * 1024)
+        self.assertLessEqual(build_module.COLD_O1_LIMIT, 4 * 1024 * 1024)
+
     def test_every_optimized_actor_file_is_a_translated_file(self):
         # A stale hot list would silently compile the busiest actors at -O0.
         here = Path(__file__).resolve().parents[1]
