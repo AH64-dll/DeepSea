@@ -1660,11 +1660,8 @@ int main(int argc, char** argv)
                     user_directory);
             }
           };
-          const bool xinput_pad = pad.device.starts_with("XInput/");
           invert_stick_y("Invert camera stick Y", "C-Stick/Up",
-                         "C-Stick/Down",
-                         xinput_pad ? "`Right Y-`" : "`Right Y+`",
-                         xinput_pad ? "`Right Y+`" : "`Right Y-`");
+                         "C-Stick/Down", "`Right Y-`", "`Right Y+`");
           if (capture.detector && capture.port == port)
           {
             ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.45f, 1.0f),
