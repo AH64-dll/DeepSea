@@ -4682,6 +4682,11 @@ static void ta_parse(CPUState* st, TaRec* r)
     for (uint32_t o = 0; o < esize && n < TA_MAX_SLOTS; ) {
         const uint32_t op = rd8_fast(st, base + o);
         if (op == GXOP_NOP) { ++o; continue; }
+        if (op == GXOP_CP) {
+            if (o + 6u > esize) break;
+            o += 6u;          /* J3DGDWriteCPCmd: u8 + u8 subcmd + u32 — skip */
+            continue;
+        }
         if (op == GXOP_XF) {
             if (o + 5u > esize) break;
             const uint32_t nwords = rd16_fast(st, base + o + 1u) + 1u;
