@@ -226,6 +226,7 @@ static int32_t  s_trace_prev_drawn = -2; /* [ft] trace: previous drawn-XFB index
 static uint32_t s_list_heap = 0;
 static uint64_t s_dbg_jfast = 0, s_dbg_jmiss = 0;
 static uint64_t s_dbg_lframes = 0, s_dbg_rframes = 0;
+static uint64_t s_dbg_ta_sight = 0, s_dbg_ta_patch = 0, s_dbg_ta_reparse = 0;
 
 /* ---- per-frame-class cost accounting --------------------------------------
  * MODERNGEKKO_FRAME60_COST=1 (or MODERNGEKKO_FRAME60_DEBUG=1) arms this. At
@@ -741,7 +742,7 @@ static void frame60_accum_decide(CPUState* state, uint32_t* disp_out)
                     for (uint32_t ei = 0; ei < n; ++ei)
                         if (rd32_fast(state, buf + ei * 4u)) ++pk[bi];
                 }
-                fprintf(stderr, "[f60] jf=%llu jm=%llu prg=%llu ovrR=%llu w0d=%llu capd=%llu gpd=%llu cut=%llu camI=%llu lg=%llu wnum=%u pd=%u rd=%u rc=%u xm=%u xi=%d,%d,%d lst=%u,%u,%u,%u cam=%08X pk=%08X,%08X,%08X pb=%u fb=%u fol=%llu jpa=%llu\n",
+                fprintf(stderr, "[f60] jf=%llu jm=%llu prg=%llu ovrR=%llu w0d=%llu capd=%llu gpd=%llu cut=%llu camI=%llu lg=%llu wnum=%u pd=%u rd=%u rc=%u xm=%u xi=%d,%d,%d lst=%u,%u,%u,%u cam=%08X pk=%08X,%08X,%08X pb=%u fb=%u fol=%llu jpa=%llu ta=%llu/%llu/%llu\n",
                     (unsigned long long)s_dbg_jfast,
                     (unsigned long long)s_dbg_jmiss,
                     (unsigned long long)s_dbg_purged,
@@ -766,7 +767,10 @@ static void frame60_accum_decide(CPUState* state, uint32_t* disp_out)
                     (unsigned)pk[0], (unsigned)pk[1], (unsigned)pk[2],
                     (unsigned)s_painter_bytes, (unsigned)s_fcdw_bytes,
                     (unsigned long long)s_dbg_folinj,
-                    (unsigned long long)s_dbg_jpainj);
+                    (unsigned long long)s_dbg_jpainj,
+                    (unsigned long long)s_dbg_ta_sight,
+                    (unsigned long long)s_dbg_ta_patch,
+                    (unsigned long long)s_dbg_ta_reparse);
             }
         }
         /* The probe walks the fifo backward one word per external read —
@@ -4489,12 +4493,16 @@ static void jpa_rframe(CPUState* st, float alpha)
  * full iteration later; the video thread sees either fully-old or fully-new
  * 4-byte words, never torn commands, and both values are legal payloads. */
 
-/* guest layout (decomp J3DPacket.h + GDBase.h):
- *   J3DMatPacket      +0x28 mpInitShapePacket
- *   J3DDrawPacket     +0x20 mpDisplayListObj
+/* guest layout (verified against the shipped GZLE01 code, NOT the decomp
+ * header comments — those run +4: J3DDrawPacket is really 0x24 bytes, so
+ * every J3DMatPacket field sits one word earlier than J3DPacket.h states):
+ *   J3DMatPacket      +0x24 mpInitShapePacket   (beginDiff: lwz r3,36(r3))
+ *                     +0x28 mpShapePacket +0x2C mpMaterial +0x30 mDiffFlag
+ *                     +0x34 mpTexture     +0x38 mpMaterialAnm
+ *   J3DDrawPacket     +0x20 mpDisplayListObj    (beginDiff: lwz r3,32(r3))
  *   J3DDisplayListObj +0x00 mpData[0] +0x04 mpData[1] +0x08 mSize +0x0C mCapacity
  *   GDLObj            +0x00 start +0x04 length +0x08 ptr +0x0C top            */
-#define MATPKT_OFF_INITSHAPE 0x28u
+#define MATPKT_OFF_INITSHAPE 0x24u
 #define SHPPKT_OFF_DLOBJ     0x20u
 #define DLOBJ_OFF_DATA0      0x00u
 #define DLOBJ_OFF_SIZE       0x08u
@@ -4548,8 +4556,6 @@ static TaRec    s_ta[TA_MAX_RECS];
 static uint16_t s_ta_hash[TA_HASH_SIZE];   /* 0=empty, else rec index + 1     */
 static uint32_t s_ta_n = 0;                /* high-water live+dead recs       */
 static uint32_t s_ta_gen = 0;              /* bumped once per L Painter entry */
-static uint64_t s_dbg_ta_sight = 0, s_dbg_ta_patch = 0, s_dbg_ta_reparse = 0;
-
 static uint32_t ta_hash_of(uint32_t dlobj) { return (dlobj >> 4) & (TA_HASH_SIZE - 1u); }
 
 /* Linear-probe lookup; on miss inserts a live record (reusing a dead or the

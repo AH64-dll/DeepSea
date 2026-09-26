@@ -2225,7 +2225,8 @@ int main(void)
         uint32_t bufpos;
         s_texanim = 1u;
 
-        /* J3DMatPacket+0x28 -> isp; J3DShapePacket+0x20 -> dlobj. */
+        /* J3DMatPacket+0x24 -> isp; J3DShapePacket+0x20 -> dlobj
+         * (real GZLE01 offsets — decomp header comments run +4). */
         store_be32(&s_memory[PKT + MATPKT_OFF_INITSHAPE - 0x80000000u], ISP);
         store_be32(&s_memory[ISP + SHPPKT_OFF_DLOBJ - 0x80000000u], DLO);
         store_be32(&s_memory[DLO + DLOBJ_OFF_DATA0 - 0x80000000u], BUFA);
