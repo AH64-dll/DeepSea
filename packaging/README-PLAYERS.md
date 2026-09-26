@@ -118,6 +118,11 @@ The **frame60-accum** mod renders at 60 fps with interpolated frames
 | `MODERNGEKKO_F60_VI_LOCK` | 1 | restore tick-only frame pacing (not locked to the display refresh) |
 | `MODERNGEKKO_F60_DISPLAY_ALPHA` | 1 | restore accumulator-based interpolation weights |
 | `MODERNGEKKO_F60_AUTO_DEGRADE` | 1 | keep 60 fps interpolation even when the PC is too slow (the game then runs in slow motion instead of dropping to 30 fps) |
+| `MODERNGEKKO_F60_PRIORITY` | 1 | run the game thread at normal priority (1 raises it one step while 60 fps is active) |
+| `MODERNGEKKO_F60_SHADOW_INTERP` | 1 | shadows move at 30 Hz |
+| `MODERNGEKKO_F60_TEXANIM` | 1 | animated textures and material colors step at 30 Hz |
+| `MODERNGEKKO_F60_JPA_FULL` | 1 | particles interpolate position only (not rotation, size, color) |
+| `MODERNGEKKO_F60_CLOTH_INTERP` | 1 | flags, sails and other cloth move at 30 Hz |
 | `MODERNGEKKO_WIDESCREEN` | auto (16:9) | disable the widescreen mod |
 | `MODERNGEKKO_CUTSCENE_SKIP` | 1 | disable Z+Start cutscene skip |
 | `MODERNGEKKO_AA` | unset | `off\|fxaa\|2x\|4x\|8x` for one run |
