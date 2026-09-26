@@ -195,6 +195,7 @@ static uint32_t s_sea_fix = 1;        /* MODERNGEKKO_F60_SEA_FIX — sea anim co
 static uint32_t s_light_fix = 1;      /* MODERNGEKKO_F60_LIGHT_FIX — R-frame relight under lerped view  */
 static uint32_t s_foliage_fix = 1;    /* MODERNGEKKO_F60_FOLIAGE_FIX — grass/flower/tree mtx lerp        */
 static uint32_t s_jpa_fix = 1;        /* MODERNGEKKO_F60_JPA_FIX — particle mGlobalPosition lerp        */
+static uint32_t s_texanim = 1;        /* MODERNGEKKO_F60_TEXANIM — J3D material-anim DL payload lerp    */
 static uint32_t s_fadelog = 0;        /* MODERNGEKKO_F60_FADELOG — fade-state forensics           */
 static uint32_t s_rnglog = 0;         /* MODERNGEKKO_F60_RNGLOG — cM_rnd state per L-frame        */
 static uint32_t s_rng_lcount = 0;     /* L-frames logged by RNGLOG (capped at 400)                */
@@ -254,6 +255,8 @@ static uint64_t s_c_snap_ns = 0, s_c_snap_n = 0;  /* j3d_snapshot_pose  (L) */
 static uint64_t s_c_refr_ns = 0, s_c_refr_n = 0;  /* j3d_rframe_refresh (R) */
 static uint64_t s_c_inj_ns  = 0, s_c_inj_n  = 0;  /* j3d_rframe_inject  (R) */
 static uint64_t s_c_frep_ns = 0, s_c_frep_n = 0;  /* fifo_replay_frame  (R) */
+static uint64_t s_c_ta_ns = 0, s_c_ta_n = 0;      /* on_end_diff scan (L)     */
+static uint64_t s_c_ta2_ns = 0, s_c_ta2_n = 0;    /* texanim_rframe     (R)   */
 
 /* Forward: env/config reader — runs at mod load, before guest starts. */
 static void frame60_accum_on_load(const ModernGekkoModHostApi* api)
@@ -382,6 +385,8 @@ static void frame60_accum_on_load(const ModernGekkoModHostApi* api)
         if (fol) s_foliage_fix = (fol[0] != '0');
         const char* jp = getenv("MODERNGEKKO_F60_JPA_FIX");
         if (jp) s_jpa_fix = (jp[0] != '0');
+        const char* ta = getenv("MODERNGEKKO_F60_TEXANIM");
+        if (ta) s_texanim = (ta[0] != '0');
         const char* fe = getenv("MODERNGEKKO_F60_FORCE_ELSE");
         if (fe && fe[0] == '1')
             s_force_else = 1;
@@ -448,6 +453,10 @@ static void camview_install(CPUState* state, float alpha);
 static void camview_restore(CPUState* state, uint32_t view);
 static void jpa_lframe(CPUState* state);
 static void jpa_rframe(CPUState* state, float alpha);
+static void texanim_lframe(CPUState* state);
+static void texanim_rframe(CPUState* state, float alpha);
+static void texanim_restore(CPUState* state);
+static void on_end_diff(CPUState* state);
 static void f60_reset_runtime_state(CPUState* state);
 static void vilog_note_eye(CPUState* state);
 static void fifo_probe(CPUState* st);
@@ -1480,7 +1489,8 @@ static void frame60_cost_report(void)
         "[f60-cost] wL=%u/%.3fms wR=%u/%.3fms wO=%u/%.3fms wtbL=%.0f wtbR=%.0f "
         "Rw=%.1f%% | cumL=%.3fms cumR=%.3fms cumO=%.3fms cRw=%.1f%% "
         "cumLN=%llu cumRN=%llu | "
-        "snap=%.1fus(%llu) refr=%.1fus(%llu) inj=%.1fus(%llu) frep=%.1fus(%llu)\n",
+        "snap=%.1fus(%llu) refr=%.1fus(%llu) inj=%.1fus(%llu) frep=%.1fus(%llu) "
+        "tadiff=%.1fus(%llu) tapatch=%.1fus(%llu)\n",
         s_wl_n, w_l_ms, s_wr_n, w_r_ms, s_wo_n, w_o_ms, w_l_tb, w_r_tb,
         w_rw, c_l_ms, c_r_ms, c_o_ms, c_rw,
         (unsigned long long)s_cost_l_n, (unsigned long long)s_cost_r_n,
@@ -1491,7 +1501,11 @@ static void frame60_cost_report(void)
         s_c_inj_n ? (double)s_c_inj_ns / (double)s_c_inj_n / 1.0e3 : 0.0,
         (unsigned long long)s_c_inj_n,
         s_c_frep_n ? (double)s_c_frep_ns / (double)s_c_frep_n / 1.0e3 : 0.0,
-        (unsigned long long)s_c_frep_n);
+        (unsigned long long)s_c_frep_n,
+        s_c_ta_n ? (double)s_c_ta_ns / (double)s_c_ta_n / 1.0e3 : 0.0,
+        (unsigned long long)s_c_ta_n,
+        s_c_ta2_n ? (double)s_c_ta2_ns / (double)s_c_ta2_n / 1.0e3 : 0.0,
+        (unsigned long long)s_c_ta2_n);
     s_wl_ns = s_wr_ns = s_wo_ns = 0;
     s_wl_tb = s_wr_tb = s_wo_tb = 0;
     s_wl_n = s_wr_n = s_wo_n = 0;
@@ -1797,6 +1811,12 @@ static void on_painter_skip(CPUState* state)
     }
     if (!(s_enabled && s_split_mode))
         return;
+    /* Every draw-consuming Painter entry: any DL payload lerp still live from
+     * the previous R-frame goes back to its curr endpoint BEFORE this frame's
+     * replay reads it (L repaint must be authoritative; R paths re-patch or
+     * stay clean below). Runs for dup/noinject paths too — the bytes belong
+     * to the mod only until this point. */
+    texanim_restore(state);
     if (s_logic_this_frame) {
         /* EXPERIMENT MODERNGEKKO_F60_FORCE_ELSE: make L-frames take the
          * exchange else-branch (clearEfb, no copy) so ONLY L-renders are
@@ -1828,6 +1848,7 @@ static void on_painter_skip(CPUState* state)
              * frame), then snapshot live positions as the lerp's L endpoint.
              * Runs at Painter ENTRY, before any particle draw this frame. */
             jpa_lframe(state);
+            texanim_lframe(state);   /* bump the endDiff sighting generation */
             s_fol_cut = 0;
         }
         if (s_vilog)
@@ -1901,6 +1922,7 @@ static void on_painter_skip(CPUState* state)
                 j3d_rframe_inject(state, s_interp_alpha);
                 if (s_cam_interp)
                     camview_install(state, s_interp_alpha);
+                texanim_rframe(state, s_interp_alpha);
             }
             s_c_inj_ns += host_now_ns() - t1; ++s_c_inj_n;
         } else {
@@ -1920,6 +1942,7 @@ static void on_painter_skip(CPUState* state)
                 j3d_rframe_inject(state, s_interp_alpha);
                 if (s_cam_interp)
                     camview_install(state, s_interp_alpha);
+                texanim_rframe(state, s_interp_alpha);
             }
         }
         /* JPA particles are world-space — they lerp even across a camera cut
@@ -4431,6 +4454,559 @@ static void jpa_rframe(CPUState* st, float alpha)
     jpa_walk(st, 1, alpha);
 }
 
+/* ---- animated-material DL payload smoothing (BTK/BRK/BPK; MODERNGEKKO_F60_TEXANIM)
+ *
+ * Problem: J3DMaterial::diff() re-emits per-frame material state (texture
+ * matrices, TEV/konst colors, mat/amb colors) into the init shape packet's
+ * differed display list each L-frame. R-frames replay the SAME DL bytes, so
+ * texture-SRT / color animation steps at 30 Hz.
+ *
+ * Design: a J3DMatPacket::endDiff entry hook (0x802DB46C) observes every
+ * re-emitted differed DL. At the hook the buffer swap + emission are already
+ * done (beginDL ran inside the critical section before us), endDL has not
+ * stored mSize yet — but __GDCurrentDL==&sGDLObj and sGDLObj.ptr-start is the
+ * exact emitted size, so the payload bytes are final. The hook parses the
+ * freshly emitted command stream, picks out the animatable payload slots:
+ *   - XF tex-mtx loads     (0x10 hdr, XF addr 0x78+12i, 8 or 12 f32)
+ *   - XF mat/amb color prs (0x10 hdr, XF addr 0x100C/0x100A, 2 RGBA32)
+ *   - BP TEV-color quads   (0x61 x4: regs eN/eN+1/eN+1/eN+1, 11-bit channels)
+ *   - BP konst-color pairs (0x61 x2: regs eN/eN+1 with bit23 set, u8 channels)
+ * and snapshots the payload. Discrete texture-pattern commands (GXSetTexImage
+ * BP image regs, indirect-mtx BP writes, tex-gen XF config) are never matched,
+ * so BTP swaps stay frame-exact by construction.
+ *
+ * Each R-frame the current slot payloads are lerped against the previous
+ * emission (unwrap-on-1.0f for BTK translation columns, raw lerp elsewhere)
+ * and written in place. The injected DL bytes live exactly one Painter pair:
+ * patched at R-entry, compared+restored at the NEXT Painter entry before any
+ * draw consumes them — the same inject/draw/restore discipline as the J3D
+ * matrix path. Because the writer region is rewritten wholesale by every
+ * emission, patching never fights the double buffer: the lerp lives in
+ * mpData[0] while mpData[1] is re-emitted next tick.
+ *
+ * GPU hazard (COMMON.md rule 8): the write window mirrors the matrix inject —
+ * bytes are patched before the FIFO submits the DL pointer and restored one
+ * full iteration later; the video thread sees either fully-old or fully-new
+ * 4-byte words, never torn commands, and both values are legal payloads. */
+
+/* guest layout (decomp J3DPacket.h + GDBase.h):
+ *   J3DMatPacket      +0x28 mpInitShapePacket
+ *   J3DDrawPacket     +0x20 mpDisplayListObj
+ *   J3DDisplayListObj +0x00 mpData[0] +0x04 mpData[1] +0x08 mSize +0x0C mCapacity
+ *   GDLObj            +0x00 start +0x04 length +0x08 ptr +0x0C top            */
+#define MATPKT_OFF_INITSHAPE 0x28u
+#define SHPPKT_OFF_DLOBJ     0x20u
+#define DLOBJ_OFF_DATA0      0x00u
+#define DLOBJ_OFF_SIZE       0x08u
+#define DLOBJ_OFF_CAPACITY   0x0Cu
+#define GDLOBJ_EA            0x803EDC08u   /* J3DDisplayListObj::sGDLObj        */
+#define GDLOBJ_OFF_START     0x00u
+#define GDLOBJ_OFF_PTR       0x08u
+#define GDCURRENT_EA         0x803F7CA8u   /* __GDCurrentDL                     */
+#define J3D_ENDDIFF_EA       0x802DB46Cu   /* J3DMatPacket::endDiff entry       */
+
+/* GX command opcodes recognised by the differed-DL parser. */
+#define GXOP_NOP   0x00u
+#define GXOP_CP    0x08u
+#define GXOP_XF    0x10u
+#define GXOP_CALLDL 0x40u
+#define GXOP_BP    0x61u
+
+enum { TA_K_TEXMTX = 0, TA_K_XFCOL2 = 1, TA_K_TEV4 = 2, TA_K_KCOL2 = 3 };
+
+#define TA_MAX_RECS   384u
+#define TA_HASH_SIZE  1024u                /* power of two                    */
+#define TA_MAX_SLOTS  16u
+#define TA_SPAN_MAX   48u                  /* largest payload span (texmtx3x4)*/
+#define TA_STALE_GENS 6u                   /* unseen-for-N-gens -> evictable  */
+#define TA_DL_CAP     0x8000u              /* parse bound sanity clamp        */
+
+typedef struct {
+    uint16_t off;      /* byte offset of the slot SPAN inside the DL          */
+    uint16_t cmd;      /* XF addr (mtx/col) or BP reg id (tev/kcol) — verify  */
+    uint8_t  nbytes;   /* span length: payload for XF kinds, 20/10 for BP     */
+    uint8_t  kind;
+    uint8_t  has_prev; /* prev[] is a usable endpoint                        */
+    uint8_t  dirty;    /* live bytes currently hold lerp[] (restore needed)  */
+    uint8_t  prev[TA_SPAN_MAX];
+    uint8_t  curr[TA_SPAN_MAX];
+    uint8_t  lerp[TA_SPAN_MAX];
+} TaSlot;
+
+typedef struct {
+    uint32_t dlobj;    /* key: J3DDisplayListObj*                             */
+    uint32_t base;     /* mpData[0] at the last sighting                      */
+    uint32_t esize;    /* emitted bytes (unpadded) at the last sighting       */
+    uint32_t seen_gen; /* s_ta_gen value when last emitted                    */
+    uint16_t nslots;
+    uint8_t  live;
+    uint8_t  injected; /* at least one dirty slot                             */
+    TaSlot   slots[TA_MAX_SLOTS];
+} TaRec;
+
+static TaRec    s_ta[TA_MAX_RECS];
+static uint16_t s_ta_hash[TA_HASH_SIZE];   /* 0=empty, else rec index + 1     */
+static uint32_t s_ta_n = 0;                /* high-water live+dead recs       */
+static uint32_t s_ta_gen = 0;              /* bumped once per L Painter entry */
+static uint64_t s_dbg_ta_sight = 0, s_dbg_ta_patch = 0, s_dbg_ta_reparse = 0;
+
+static uint32_t ta_hash_of(uint32_t dlobj) { return (dlobj >> 4) & (TA_HASH_SIZE - 1u); }
+
+/* Linear-probe lookup; on miss inserts a live record (reusing a dead or the
+ * stalest slot when the table is full — stale hash entries pointing at a
+ * recycled rec are harmless because rec->dlobj is the authoritative key). */
+static TaRec* ta_find(uint32_t dlobj)
+{
+    uint32_t h = ta_hash_of(dlobj);
+    for (uint32_t p = 0; p < 16u; ++p) {
+        const uint32_t slot = (h + p) & (TA_HASH_SIZE - 1u);
+        const uint16_t e = s_ta_hash[slot];
+        if (e == 0) {
+            /* miss — insert here */
+            TaRec* r = NULL;
+            for (uint32_t i = 0; i < s_ta_n; ++i) {
+                if (!s_ta[i].live) { r = &s_ta[i]; break; }
+            }
+            if (!r && s_ta_n < TA_MAX_RECS) r = &s_ta[s_ta_n++];
+            if (!r) {
+                /* table full — evict the stalest rec */
+                uint32_t best = 0, bs = 0xFFFFFFFFu;
+                for (uint32_t i = 0; i < s_ta_n; ++i) {
+                    if (s_ta[i].seen_gen < bs) { bs = s_ta[i].seen_gen; best = i; }
+                }
+                r = &s_ta[best];
+                if (bs + TA_STALE_GENS >= s_ta_gen) return NULL;  /* all fresh */
+            }
+            memset(r, 0, sizeof(*r));
+            r->dlobj = dlobj;
+            r->live = 1;
+            s_ta_hash[slot] = (uint16_t)((r - s_ta) + 1u);
+            return r;
+        }
+        TaRec* r = &s_ta[e - 1u];
+        if (r->dlobj == dlobj) return r;
+    }
+    return NULL;   /* probe chain saturated */
+}
+
+static void ta_span_read(CPUState* st, uint32_t addr, uint8_t* dst, uint32_t n)
+{
+    for (uint32_t i = 0; i < n; ++i) dst[i] = (uint8_t)rd8_fast(st, addr + i);
+}
+
+static int ta_span_eq(CPUState* st, uint32_t addr, const uint8_t* ref, uint32_t n)
+{
+    for (uint32_t i = 0; i < n; ++i)
+        if (rd8_fast(st, addr + i) != ref[i]) return 0;
+    return 1;
+}
+
+/* Write a slot span honouring the per-kind payload layout: XF kinds store the
+ * whole span, BP kinds write only the u32 after each 0x61 header byte. */
+static void ta_span_write(CPUState* st, uint32_t base, const TaSlot* s,
+                          const uint8_t* src)
+{
+    const uint32_t addr = base + s->off;
+    if (s->kind == TA_K_TEV4 || s->kind == TA_K_KCOL2) {
+        const uint32_t n = (s->kind == TA_K_TEV4) ? 4u : 2u;
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint32_t w = ((uint32_t)src[i * 5u + 1u] << 24) |
+                               ((uint32_t)src[i * 5u + 2u] << 16) |
+                               ((uint32_t)src[i * 5u + 3u] << 8) |
+                               (uint32_t)src[i * 5u + 4u];
+            wr32_fast(st, addr + i * 5u + 1u, w);
+        }
+    } else {
+        for (uint32_t i = 0; i < s->nbytes; i += 4u) {
+            const uint32_t w = ((uint32_t)src[i] << 24) | ((uint32_t)src[i + 1u] << 16) |
+                               ((uint32_t)src[i + 2u] << 8) | (uint32_t)src[i + 3u];
+            wr32_fast(st, addr + i, w);
+        }
+    }
+}
+
+/* Header signature check: the command at slot.off still has the shape the
+ * parser recorded. Verifies before trusting stored offsets across frames. */
+static int ta_slot_sig_ok(CPUState* st, uint32_t base, const TaSlot* s)
+{
+    const uint32_t a = base + s->off;
+    if (s->kind == TA_K_TEXMTX || s->kind == TA_K_XFCOL2) {
+        const uint32_t h = a - 5u;
+        if (rd8_fast(st, h) != GXOP_XF) return 0;
+        if (rd16_fast(st, h + 1u) + 1u != s->nbytes / 4u) return 0;
+        if (rd16_fast(st, h + 3u) != s->cmd) return 0;
+        return 1;
+    }
+    if (rd8_fast(st, a) != GXOP_BP || rd8_fast(st, a + 1u) != s->cmd) return 0;
+    if (s->kind == TA_K_KCOL2)
+        return rd8_fast(st, a + 5u) == GXOP_BP && rd8_fast(st, a + 6u) == s->cmd + 1u;
+    /* TA_K_TEV4 */
+    return rd8_fast(st, a + 5u)  == GXOP_BP && rd8_fast(st, a + 6u)  == s->cmd + 1u &&
+           rd8_fast(st, a + 10u) == GXOP_BP && rd8_fast(st, a + 11u) == s->cmd + 1u &&
+           rd8_fast(st, a + 15u) == GXOP_BP && rd8_fast(st, a + 16u) == s->cmd + 1u;
+}
+
+static int ta_is_texmtx_cmd(uint32_t cmd, uint32_t nwords)
+{
+    /* J3DGDLoadTexMtxImm: cmd = (GX_TEXMTX0 + i*3)*4 = 0x78+12i (i<8),
+     * len = 8 (GX_MTX2x4) or 12 (GX_MTX3x4). */
+    if (nwords != 8u && nwords != 12u) return 0;
+    return cmd >= 0x78u && cmd <= 0xCCu && ((cmd - 0x78u) % 12u) == 0u;
+}
+
+static int ta_is_bp_tev_reg(uint32_t reg)
+{
+    /* J3DGDSetTevColorS10/J3DGDSetTevKColor base regs: e0,e2,e4,e6. */
+    return reg == 0xE0u || reg == 0xE2u || reg == 0xE4u || reg == 0xE6u;
+}
+
+/* Walk the freshly emitted command stream and register every animatable
+ * payload slot. Unknown opcodes stop the parse — the slots found so far stay
+ * valid (they cover complete commands), the tail is simply left unpatched. */
+static void ta_parse(CPUState* st, TaRec* r)
+{
+    const uint32_t base = r->base;
+    uint32_t esize = r->esize;
+    const uint32_t cap = rd32_fast(st, r->dlobj + DLOBJ_OFF_CAPACITY);
+    uint16_t n = 0;
+    if (esize > cap) esize = cap;
+    if (esize > TA_DL_CAP) esize = TA_DL_CAP;
+    r->nslots = 0;
+    if (!in_ram(st, base, esize)) return;
+    for (uint32_t o = 0; o < esize && n < TA_MAX_SLOTS; ) {
+        const uint32_t op = rd8_fast(st, base + o);
+        if (op == GXOP_NOP) { ++o; continue; }
+        if (op == GXOP_XF) {
+            if (o + 5u > esize) break;
+            const uint32_t nwords = rd16_fast(st, base + o + 1u) + 1u;
+            const uint32_t cmd = rd16_fast(st, base + o + 3u);
+            const uint32_t span = 5u + 4u * nwords;
+            if (o + span > esize) break;
+            if (ta_is_texmtx_cmd(cmd, nwords)) {
+                TaSlot* s = &r->slots[n++];
+                memset(s, 0, sizeof(*s));
+                s->off = (uint16_t)(o + 5u);
+                s->cmd = (uint16_t)cmd;
+                s->nbytes = (uint8_t)(4u * nwords);
+                s->kind = TA_K_TEXMTX;
+            } else if ((cmd == 0x100Cu || cmd == 0x100Au) && nwords == 2u) {
+                /* loadMatColors (0x100C) / loadAmbColors (0x100A): 2 RGBA32 */
+                TaSlot* s = &r->slots[n++];
+                memset(s, 0, sizeof(*s));
+                s->off = (uint16_t)(o + 5u);
+                s->cmd = (uint16_t)cmd;
+                s->nbytes = 8u;
+                s->kind = TA_K_XFCOL2;
+            }
+            o += span;
+        } else if (op == GXOP_BP) {
+            if (o + 5u > esize) break;
+            const uint32_t reg = rd8_fast(st, base + o + 1u);
+            if (ta_is_bp_tev_reg(reg)) {
+                const uint32_t w0b1 = rd8_fast(st, base + o + 2u);
+                if (w0b1 & 0x80u) {
+                    /* J3DGDSetTevKColor: 2 cmds {reg, reg+1} with bit23 set */
+                    if (o + 10u <= esize &&
+                        rd8_fast(st, base + o + 5u) == GXOP_BP &&
+                        rd8_fast(st, base + o + 6u) == reg + 1u) {
+                        TaSlot* s = &r->slots[n++];
+                        memset(s, 0, sizeof(*s));
+                        s->off = (uint16_t)o;
+                        s->cmd = (uint16_t)reg;
+                        s->nbytes = 10u;
+                        s->kind = TA_K_KCOL2;
+                        o += 10u; continue;
+                    }
+                } else {
+                    /* J3DGDSetTevColorS10: 4 cmds {reg, reg+1, reg+1, reg+1} */
+                    if (o + 20u <= esize &&
+                        rd8_fast(st, base + o + 5u)  == GXOP_BP && rd8_fast(st, base + o + 6u)  == reg + 1u &&
+                        rd8_fast(st, base + o + 10u) == GXOP_BP && rd8_fast(st, base + o + 11u) == reg + 1u &&
+                        rd8_fast(st, base + o + 15u) == GXOP_BP && rd8_fast(st, base + o + 16u) == reg + 1u) {
+                        TaSlot* s = &r->slots[n++];
+                        memset(s, 0, sizeof(*s));
+                        s->off = (uint16_t)o;
+                        s->cmd = (uint16_t)reg;
+                        s->nbytes = 20u;
+                        s->kind = TA_K_TEV4;
+                        o += 20u; continue;
+                    }
+                }
+            }
+            o += 5u;   /* unmatched/other BP command */
+        } else {
+            break;     /* draw/CP/call/unknown opcodes — not in diff output   */
+        }
+    }
+    r->nslots = n;
+    ++s_dbg_ta_reparse;
+}
+
+/* Channel lerp helpers. s11: GXColorS10 11-bit signed fields; u8: GXColor. */
+static float ta_lerp_f(float p, float c, float a)
+{
+    if (!(p == p) || !(c == c)) return c;          /* NaN guard -> curr       */
+    return p + (c - p) * a;
+}
+static int32_t ta_lerp_u8(uint32_t p, uint32_t c, float a)
+{
+    float f = (float)p + ((float)c - (float)p) * a;
+    int32_t v = (int32_t)(f + (f >= 0.0f ? 0.5f : -0.5f));
+    return v < 0 ? 0 : (v > 255 ? 255 : v);
+}
+static int32_t ta_lerp_s11(uint32_t p, uint32_t c, float a)
+{
+    const int32_t ps = (int32_t)((p & 0x7FFu) ^ 0x400u) - 0x400;
+    const int32_t cs = (int32_t)((c & 0x7FFu) ^ 0x400u) - 0x400;
+    float f = (float)ps + ((float)cs - (float)ps) * a;
+    int32_t v = (int32_t)(f + (f >= 0.0f ? 0.5f : -0.5f));
+    return v < -1024 ? -1024 : (v > 1023 ? 1023 : v);
+}
+
+static uint32_t ta_span_u32(const uint8_t* p, uint32_t i)
+{
+    return ((uint32_t)p[i] << 24) | ((uint32_t)p[i + 1u] << 16) |
+           ((uint32_t)p[i + 2u] << 8) | (uint32_t)p[i + 3u];
+}
+static void ta_put_u32(uint8_t* p, uint32_t i, uint32_t w)
+{
+    p[i] = (uint8_t)(w >> 24); p[i + 1u] = (uint8_t)(w >> 16);
+    p[i + 2u] = (uint8_t)(w >> 8); p[i + 3u] = (uint8_t)w;
+}
+
+/* Build the lerped span bytes for one slot into slot->lerp. Returns 0 when
+ * the result equals curr (static content / edge cases -> leave unpatched). */
+static int ta_build_lerp(TaSlot* s, float alpha)
+{
+    const uint32_t n = s->nbytes;
+    memcpy(s->lerp, s->curr, n);
+    if (memcmp(s->prev, s->curr, n) == 0) return 0;   /* static emission       */
+    switch (s->kind) {
+    case TA_K_TEXMTX: {
+        const uint32_t nf = n / 4u;
+        float maxd = 0.0f;
+        for (uint32_t i = 0; i < nf; ++i) {
+            const float d = be_f32(&s->curr[i * 4u]) - be_f32(&s->prev[i * 4u]);
+            const float ad = d < 0.0f ? -d : d;
+            if (ad > maxd) maxd = ad;
+        }
+        if (maxd > 64.0f) return 0;                 /* teleport scale -> snap  */
+        for (uint32_t i = 0; i < nf; ++i) {
+            float p = be_f32(&s->prev[i * 4u]);
+            float c = be_f32(&s->curr[i * 4u]);
+            float d = c - p;
+            /* BTK translation wrap: on 2x4 (SRT) matrices the column-3
+             * elements carry the UV translation and cyclic BTK tracks wrap
+             * there (e.g. +0.98 -> -0.98 continuing the scroll). Any |d|>0.5
+             * in a column element is a wrap or a huge one-tick scroll — take
+             * the nearest-integer short way either way. 3x4 payloads are
+             * view/projection matrices (envmap) whose translation column is
+             * real view motion — no unwrap. */
+            if (n == 32u && (i == 3u || i == 7u)) {
+                const float ad = d < 0.0f ? -d : d;
+                if (ad > 0.5f) {
+                    const float k = floorf(d + 0.5f);
+                    if (k <= 8.0f && k >= -8.0f) d -= k;
+                }
+            }
+            const float v = ta_lerp_f(p, p + d, alpha);
+            if (!(v == v)) { wr_be_f32(&s->lerp[i * 4u], c); continue; }
+            wr_be_f32(&s->lerp[i * 4u], v);
+        }
+        return 1;
+    }
+    case TA_K_XFCOL2:
+        for (uint32_t i = 0; i < 8u; ++i)
+            s->lerp[i] = (uint8_t)ta_lerp_u8(s->prev[i], s->curr[i], alpha);
+        return 1;
+    case TA_K_KCOL2: {
+        /* 2 cmds; word at rel+1 holds r[0:7]|a[12:19]|bit23|reg<<24,
+         * word at rel+6 holds b[0:7]|g[12:19]|bit23|reg+1<<24. */
+        const uint32_t w0p = ta_span_u32(s->prev, 1u), w0c = ta_span_u32(s->curr, 1u);
+        const uint32_t w1p = ta_span_u32(s->prev, 6u), w1c = ta_span_u32(s->curr, 6u);
+        const int32_t r = ta_lerp_u8(w0p & 0xFFu, w0c & 0xFFu, alpha);
+        const int32_t a = ta_lerp_u8((w0p >> 12) & 0xFFu, (w0c >> 12) & 0xFFu, alpha);
+        const int32_t b = ta_lerp_u8(w1p & 0xFFu, w1c & 0xFFu, alpha);
+        const int32_t g = ta_lerp_u8((w1p >> 12) & 0xFFu, (w1c >> 12) & 0xFFu, alpha);
+        ta_put_u32(s->lerp, 1u, (w0c & 0xFF000000u) | (1u << 23) |
+                                ((uint32_t)a << 12) | (uint32_t)r);
+        ta_put_u32(s->lerp, 6u, (w1c & 0xFF000000u) | (1u << 23) |
+                                ((uint32_t)g << 12) | (uint32_t)b);
+        return 1;
+    }
+    case TA_K_TEV4: {
+        const uint32_t w0p = ta_span_u32(s->prev, 1u), w0c = ta_span_u32(s->curr, 1u);
+        const uint32_t w1p = ta_span_u32(s->prev, 6u), w1c = ta_span_u32(s->curr, 6u);
+        const int32_t r = ta_lerp_s11(w0p & 0x7FFu, w0c & 0x7FFu, alpha);
+        const int32_t a = ta_lerp_s11((w0p >> 12) & 0x7FFu, (w0c >> 12) & 0x7FFu, alpha);
+        const int32_t b = ta_lerp_s11(w1p & 0x7FFu, w1c & 0x7FFu, alpha);
+        const int32_t g = ta_lerp_s11((w1p >> 12) & 0x7FFu, (w1c >> 12) & 0x7FFu, alpha);
+        const uint32_t w0 = (w0c & 0xFF000000u) | (((uint32_t)a & 0x7FFu) << 12) |
+                            ((uint32_t)r & 0x7FFu);
+        const uint32_t w1 = (w1c & 0xFF000000u) | (((uint32_t)g & 0x7FFu) << 12) |
+                            ((uint32_t)b & 0x7FFu);
+        ta_put_u32(s->lerp, 1u,  w0);
+        ta_put_u32(s->lerp, 6u,  w1);
+        ta_put_u32(s->lerp, 11u, w1);
+        ta_put_u32(s->lerp, 16u, w1);
+        return 1;
+    }
+    }
+    return 0;
+}
+
+/* J3DMatPacket::endDiff entry hook (0x802DB46C). r3 = this; runs inside the
+ * beginDL/endDL critical section with the emission complete and
+ * __GDCurrentDL == &sGDLObj, so sGDLObj.ptr-start is the exact new size and
+ * sGDLObj.start == the packet's mpData[0]. Entry hook, not return: endDiff
+ * fires per animated material (~300-800x/frame) and RETURN hooks saturate
+ * the pending-return scan on hot functions. */
+static void on_end_diff(CPUState* st)
+{
+    if (!s_texanim) return;
+    const uint64_t t0 = s_cost ? host_now_ns() : 0;
+    const uint32_t pkt = (uint32_t)st->gpr[3];
+    uint32_t isp, dlobj, base, gstart, gptr, esize;
+    TaRec* r;
+    int reparse = 0;
+    if (!in_ram(st, pkt, 0x40u)) goto out;
+    isp = rd32_fast(st, pkt + MATPKT_OFF_INITSHAPE);
+    if (!in_ram(st, isp, SHPPKT_OFF_DLOBJ + 4u)) goto out;
+    dlobj = rd32_fast(st, isp + SHPPKT_OFF_DLOBJ);
+    if (!in_ram(st, dlobj, 0x10u)) goto out;
+    /* The critical section guarantees the GDL state belongs to THIS packet:
+     * current==sGDLObj and its start==the packet's current buffer. */
+    if (rd32_fast(st, GDCURRENT_EA) != GDLOBJ_EA) goto out;
+    gstart = rd32_fast(st, GDLOBJ_EA + GDLOBJ_OFF_START);
+    gptr = rd32_fast(st, GDLOBJ_EA + GDLOBJ_OFF_PTR);
+    base = rd32_fast(st, dlobj + DLOBJ_OFF_DATA0);
+    if (gstart != base || gptr < gstart || !in_ram(st, base, 1u)) goto out;
+    esize = gptr - gstart;
+    r = ta_find(dlobj);
+    if (!r) goto out;
+    ++s_dbg_ta_sight;
+    r->seen_gen = s_ta_gen;
+    /* mpData[0] ALTERNATES every emission — a changed base is the normal
+     * double-buffer swap, not a shape change: stored offsets are relative to
+     * the buffer start and stay valid. Only an esize change or a failed
+     * signature check means the emitted command shape actually moved. */
+    if (r->esize != esize)
+        reparse = 1;
+    r->base = base;
+    r->esize = esize;
+    if (!reparse) {
+        /* Verify stored slot signatures on the new emission — a changed
+         * diff-mask inserts/removes commands and shifts offsets. */
+        for (uint32_t i = 0; i < r->nslots; ++i) {
+            const TaSlot* s = &r->slots[i];
+            if ((uint32_t)s->off + s->nbytes > esize ||
+                !ta_slot_sig_ok(st, base, s)) { reparse = 1; break; }
+        }
+    }
+    if (reparse) {
+        ta_parse(st, r);
+        /* Fresh parse: current payloads are the first endpoints — no prev. */
+        for (uint32_t i = 0; i < r->nslots; ++i) {
+            TaSlot* s = &r->slots[i];
+            ta_span_read(st, base + s->off, s->curr, s->nbytes);
+            s->has_prev = 0;
+            s->dirty = 0;
+        }
+        r->injected = 0;
+        goto out;
+    }
+    /* Same-shape emission: rotate prev <- last emission unconditionally —
+     * the endpoint pair is always (previous L emission, current L emission),
+     * even when the payload did not change (a static tick must not replay an
+     * older pair's motion). The first sighting after a reparse carries
+     * has_prev=0 from above; every sighting after that has a real pair. */
+    for (uint32_t i = 0; i < r->nslots; ++i) {
+        TaSlot* s = &r->slots[i];
+        uint8_t tmp[TA_SPAN_MAX];
+        ta_span_read(st, base + s->off, tmp, s->nbytes);
+        memcpy(s->prev, s->curr, s->nbytes);
+        memcpy(s->curr, tmp, s->nbytes);
+        s->has_prev = 1;
+        s->dirty = 0;   /* emission overwrote any old lerp bytes            */
+    }
+    r->injected = 0;
+out:
+    if (s_cost) { s_c_ta_ns += host_now_ns() - t0; ++s_c_ta_n; }
+}
+
+/* Per-L-frame Painter entry: advance the sighting generation. Restoration of
+ * outstanding patches runs unconditionally at every painter entry (common
+ * path), so this only bumps the gen — endDiff sightings during the upcoming
+ * fpcDw draw get stamped with it. */
+static void texanim_lframe(CPUState* st)
+{
+    (void)st;
+    if (!s_texanim) return;
+    ++s_ta_gen;
+    /* Reclaim records whose DL stopped re-emitting (material culled/model
+     * destroyed) — keeps insert capacity free for new animations. */
+    for (uint32_t i = 0; i < s_ta_n; ++i)
+        if (s_ta[i].live && s_ta[i].seen_gen + TA_STALE_GENS < s_ta_gen)
+            s_ta[i].live = 0;
+}
+
+/* Restore any outstanding lerp payloads to their curr endpoints. Runs at
+ * every Painter entry (L draw must see authoritative bytes; R noinject/cut
+ * paths replay unpatched). The scratch compare makes the write conditional
+ * on the bytes still holding exactly what we injected — if the region was
+ * recycled or rewritten by something else, leave it alone. */
+static void texanim_restore(CPUState* st)
+{
+    if (!s_texanim) return;
+    for (uint32_t i = 0; i < s_ta_n; ++i) {
+        TaRec* r = &s_ta[i];
+        if (!r->injected) continue;
+        r->injected = 0;
+        if (!in_ram(st, r->base, r->esize < 1u ? 1u : r->esize)) continue;
+        for (uint32_t k = 0; k < r->nslots; ++k) {
+            TaSlot* s = &r->slots[k];
+            if (!s->dirty) continue;
+            s->dirty = 0;
+            if (!ta_span_eq(st, r->base + s->off, s->lerp, s->nbytes))
+                continue;   /* not our bytes anymore — do not clobber        */
+            ta_span_write(st, r->base, s, s->curr);
+        }
+    }
+}
+
+/* R-frame: write lerp(prev,curr,alpha) into each live differed DL still
+ * carrying its L emission. Re-resolves mpData[0] per rec — a stale base or
+ * an unsighted generation means the record does not describe this frame. */
+static void texanim_rframe(CPUState* st, float alpha)
+{
+    const uint64_t t0 = s_cost ? host_now_ns() : 0;
+    if (!s_texanim) return;
+    if (alpha <= 0.0f || alpha >= 1.0f) return;
+    for (uint32_t i = 0; i < s_ta_n; ++i) {
+        TaRec* r = &s_ta[i];
+        uint32_t base, esize;
+        if (!r->live || r->seen_gen != s_ta_gen) continue;
+        if (!in_ram(st, r->dlobj, 0x10u)) continue;
+        base = rd32_fast(st, r->dlobj + DLOBJ_OFF_DATA0);
+        if (base != r->base) continue;    /* swapped since the sighting      */
+        esize = r->esize;
+        if (!in_ram(st, base, esize)) continue;
+        for (uint32_t k = 0; k < r->nslots; ++k) {
+            TaSlot* s = &r->slots[k];
+            if (!s->has_prev) continue;
+            if (!ta_build_lerp(s, alpha)) continue;   /* static -> leave curr */
+            /* Guard: confirm the live payload is still this tick's emission
+             * before writing (recycled/recycled buffer -> skip). */
+            if (!ta_span_eq(st, base + s->off, s->curr, s->nbytes)) continue;
+            ta_span_write(st, base, s, s->lerp);
+            s->dirty = 1;
+            r->injected = 1;
+            ++s_dbg_ta_patch;
+        }
+    }
+    if (s_cost) { s_c_ta2_ns += host_now_ns() - t0; ++s_c_ta2_n; }
+}
+
 /* ---- M1: shared runtime-state reset -----------------------------------------
  * Called on the split engage/disengage edges and from on_unload. Clears every
  * per-frame mutable static so a stale snapshot/lerp/armed-flag can never leak
@@ -4455,6 +5031,7 @@ static void f60_reset_runtime_state(CPUState* st)
         if (s_cam_injected && s_cam_view && J3D_IN_MEM1(s_cam_view) &&
             rd32_fast(st, GAMEINFO_MCURRVIEW) == s_cam_view)
             camview_restore(st, s_cam_view);
+        texanim_restore(st);   /* outstanding DL payload lerps              */
     }
     s_split_mode = 0;
     s_logic_this_frame = 1;
@@ -4566,6 +5143,13 @@ static void f60_reset_runtime_state(CPUState* st)
      * a disengage edge can land between an R inject and the next L entry. */
     if (st) jpa_restore(st);
     memset(s_jpa, 0, sizeof(s_jpa));
+    memset(s_ta, 0, sizeof(s_ta));
+    memset(s_ta_hash, 0, sizeof(s_ta_hash));
+    s_ta_n = 0;
+    s_ta_gen = 0;
+    s_dbg_ta_sight = s_dbg_ta_patch = s_dbg_ta_reparse = 0;
+    s_c_ta_ns = s_c_ta_n = 0;
+    s_c_ta2_ns = s_c_ta2_n = 0;
     if (st)
         s_list_heap = rd8_fast(st, GINF_MCURRHEAP) & 1u;
     else
@@ -4815,6 +5399,14 @@ static const ModernGekkoModHook hooks_interp[] = {
     RECOMP_HOOK_RETURN(0x8007960Cu, on_tree_draw_return),
 };
 
+/* Animated-material DL tracking — registered only when the R-render path can
+ * run (split + Painter replay + J3D interp) AND texanim is on. endDiff fires
+ * once per animated-material diff (~hundreds/frame); entry hook only — the
+ * emitted DL state is already final at entry (see on_end_diff). */
+static const ModernGekkoModHook hooks_texanim[] = {
+    RECOMP_HOOK(0x802DB46Cu, on_end_diff),              /* J3DMatPacket::endDiff */
+};
+
 /* Stale-entry purge: JKR free funnels, split into separately-armable groups.
  * `delete` routes through operator delete -> static JKRHeap::free(ptr,heap)
  * -> member free() — the tail calls are intra-chunk, so each funnel needs
@@ -4895,6 +5487,7 @@ static ModernGekkoModHook hooks_active[
     sizeof(hooks_vilog) / sizeof(hooks_vilog[0]) +
     sizeof(hooks_libm) / sizeof(hooks_libm[0]) +
     sizeof(hooks_interp) / sizeof(hooks_interp[0]) +
+    sizeof(hooks_texanim) / sizeof(hooks_texanim[0]) +
     sizeof(hooks_purge_free) / sizeof(hooks_purge_free[0]) +
     sizeof(hooks_purge_bulk) / sizeof(hooks_purge_bulk[0])];
 
@@ -4918,6 +5511,9 @@ MODERNGEKKO_MOD_EXPORT const ModernGekkoModDesc* moderngekko_get_mod(void)
         if (s_j3d_interp) {
             for (i = 0; i < (uint32_t)(sizeof(hooks_interp) / sizeof(hooks_interp[0])); ++i)
                 hooks_active[n++] = hooks_interp[i];
+            if (s_texanim && s_rframe_render)
+                for (i = 0; i < (uint32_t)(sizeof(hooks_texanim) / sizeof(hooks_texanim[0])); ++i)
+                    hooks_active[n++] = hooks_texanim[i];
             if (s_purge_free)
                 for (i = 0; i < (uint32_t)(sizeof(hooks_purge_free) / sizeof(hooks_purge_free[0])); ++i)
                     hooks_active[n++] = hooks_purge_free[i];
