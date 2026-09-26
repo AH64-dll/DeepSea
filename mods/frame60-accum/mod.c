@@ -486,6 +486,9 @@ static uint64_t s_dbg_lightgate;      /* dKy_setLight R-frame intercepts (skip o
 static uint64_t s_dbg_folinj;         /* foliage element matrices lerped on R-frames        */
 static uint64_t s_dbg_jpainj;         /* JPA particle positions lerped on R-frames          */
 static uint64_t s_cloth_dbg_lerp, s_cloth_dbg_skip; /* cloth packets lerped / warp-skipped */
+static uint64_t s_cloth_dbg_dol;                  /* DOL draw entries gated OK on R */
+static uint64_t s_cloth_dbg_rel;                  /* rel packets classified on R    */
+static uint64_t s_cloth_dbg_bas;                  /* resolved-base bitmask (OR'd)   */
 static uint32_t s_hist_used;
 static uint32_t s_matrices_injected = 0; /* live guest arrays currently hold our lerp */
 
@@ -767,6 +770,10 @@ static void frame60_accum_decide(CPUState* state, uint32_t* disp_out)
                     (unsigned long long)s_dbg_jpainj,
                     (unsigned long long)s_cloth_dbg_lerp,
                     (unsigned long long)s_cloth_dbg_skip);
+                fprintf(stderr, "[f60-cloth] dol=%llu rel=%llu bas=%llu\n",
+                    (unsigned long long)s_cloth_dbg_dol,
+                    (unsigned long long)s_cloth_dbg_rel,
+                    (unsigned long long)s_cloth_dbg_bas);
             }
         }
         /* The probe walks the fifo backward one word per external read —
@@ -4673,6 +4680,7 @@ static void cloth_resolve_bases(CPUState* st, uint32_t* bases, uint32_t nb)
                 s_cloth_specs[i].vtab_off <
                     rd32_fast(st, tbl + CLOTH_SEC_DATA * 8u + 4u)) {
                 bases[i] = rd32_fast(st, tbl + CLOTH_SEC_DATA * 8u);
+                s_cloth_dbg_bas |= (1ull << i);
                 ++found;
             }
             break;      /* module names are unique — done with this node */
@@ -4890,8 +4898,10 @@ static void cloth_walk_drawbufs(CPUState* st, const uint32_t* bases, uint32_t nb
             uint32_t hops = 0;
             while (pkt && hops < J3DPKT_CHAIN_CAP && in_ram(st, pkt, 4u)) {
                 const int spec_i = cloth_classify(bases, nb, rd32_fast(st, pkt));
-                if (spec_i >= 0)
+                if (spec_i >= 0) {
+                    if (rframe) ++s_cloth_dbg_rel;
                     cloth_visit_packet(st, pkt, spec_i, rframe, alpha);
+                }
                 if (!in_ram(st, pkt + J3DPKT_OFF_NEXT, 4u)) break;
                 pkt = rd32_fast(st, pkt + J3DPKT_OFF_NEXT);
                 ++hops;
@@ -4979,6 +4989,7 @@ static void on_cloth_draw_entry(CPUState* st)
     if (alpha <= 0.0f || alpha >= 1.0f) return;
     self = st->gpr[3];
     if (!in_ram(st, self, DCLOTH_SPAN)) return;
+    ++s_cloth_dbg_dol;   /* reached the work gates on an R-render frame */
     cur = rd8_fast(st, self + DCLOTH_OFF_CUR) & 1u;
     n = rd32_fast(st, self + DCLOTH_OFF_FLY) *
         rd32_fast(st, self + DCLOTH_OFF_HOIST);
@@ -5177,6 +5188,7 @@ static void f60_reset_runtime_state(CPUState* st)
     s_cloth_dol_armed = 0;
     s_cloth_seen_n = 0;
     s_cloth_dbg_lerp = s_cloth_dbg_skip = 0;
+    s_cloth_dbg_dol = s_cloth_dbg_rel = s_cloth_dbg_bas = 0;
     if (st)
         s_list_heap = rd8_fast(st, GINF_MCURRHEAP) & 1u;
     else
