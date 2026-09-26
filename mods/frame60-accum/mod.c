@@ -195,6 +195,8 @@ static uint32_t s_sea_fix = 1;        /* MODERNGEKKO_F60_SEA_FIX — sea anim co
 static uint32_t s_light_fix = 1;      /* MODERNGEKKO_F60_LIGHT_FIX — R-frame relight under lerped view  */
 static uint32_t s_foliage_fix = 1;    /* MODERNGEKKO_F60_FOLIAGE_FIX — grass/flower/tree mtx lerp        */
 static uint32_t s_jpa_fix = 1;        /* MODERNGEKKO_F60_JPA_FIX — particle mGlobalPosition lerp        */
+static uint32_t s_jpa_full = 1;       /* MODERNGEKKO_F60_JPA_FULL — full draw-state lerp (rot/scale/
+                                       * alpha/color/emitter); =0 keeps position-only behavior        */
 static uint32_t s_fadelog = 0;        /* MODERNGEKKO_F60_FADELOG — fade-state forensics           */
 static uint32_t s_rnglog = 0;         /* MODERNGEKKO_F60_RNGLOG — cM_rnd state per L-frame        */
 static uint32_t s_rng_lcount = 0;     /* L-frames logged by RNGLOG (capped at 400)                */
@@ -382,6 +384,8 @@ static void frame60_accum_on_load(const ModernGekkoModHostApi* api)
         if (fol) s_foliage_fix = (fol[0] != '0');
         const char* jp = getenv("MODERNGEKKO_F60_JPA_FIX");
         if (jp) s_jpa_fix = (jp[0] != '0');
+        const char* jpf = getenv("MODERNGEKKO_F60_JPA_FULL");
+        if (jpf) s_jpa_full = (jpf[0] != '0');
         const char* fe = getenv("MODERNGEKKO_F60_FORCE_ELSE");
         if (fe && fe[0] == '1')
             s_force_else = 1;
@@ -479,6 +483,7 @@ static uint64_t s_dbg_caminj;         /* camera view/proj mid-view installs */
 static uint64_t s_dbg_lightgate;      /* dKy_setLight R-frame intercepts (skip or relight) */
 static uint64_t s_dbg_folinj;         /* foliage element matrices lerped on R-frames        */
 static uint64_t s_dbg_jpainj;         /* JPA particle positions lerped on R-frames          */
+static uint64_t s_dbg_jpaeinj;        /* JPA emitter states lerped on R-frames              */
 static uint32_t s_hist_used;
 static uint32_t s_matrices_injected = 0; /* live guest arrays currently hold our lerp */
 
@@ -732,7 +737,7 @@ static void frame60_accum_decide(CPUState* state, uint32_t* disp_out)
                     for (uint32_t ei = 0; ei < n; ++ei)
                         if (rd32_fast(state, buf + ei * 4u)) ++pk[bi];
                 }
-                fprintf(stderr, "[f60] jf=%llu jm=%llu prg=%llu ovrR=%llu w0d=%llu capd=%llu gpd=%llu cut=%llu camI=%llu lg=%llu wnum=%u pd=%u rd=%u rc=%u xm=%u xi=%d,%d,%d lst=%u,%u,%u,%u cam=%08X pk=%08X,%08X,%08X pb=%u fb=%u fol=%llu jpa=%llu\n",
+                fprintf(stderr, "[f60] jf=%llu jm=%llu prg=%llu ovrR=%llu w0d=%llu capd=%llu gpd=%llu cut=%llu camI=%llu lg=%llu wnum=%u pd=%u rd=%u rc=%u xm=%u xi=%d,%d,%d lst=%u,%u,%u,%u cam=%08X pk=%08X,%08X,%08X pb=%u fb=%u fol=%llu jpa=%llu/%llu\n",
                     (unsigned long long)s_dbg_jfast,
                     (unsigned long long)s_dbg_jmiss,
                     (unsigned long long)s_dbg_purged,
@@ -757,7 +762,8 @@ static void frame60_accum_decide(CPUState* state, uint32_t* disp_out)
                     (unsigned)pk[0], (unsigned)pk[1], (unsigned)pk[2],
                     (unsigned)s_painter_bytes, (unsigned)s_fcdw_bytes,
                     (unsigned long long)s_dbg_folinj,
-                    (unsigned long long)s_dbg_jpainj);
+                    (unsigned long long)s_dbg_jpainj,
+                    (unsigned long long)s_dbg_jpaeinj);
             }
         }
         /* The probe walks the fifo backward one word per external read —
@@ -4249,24 +4255,60 @@ static void on_tree_draw_return(CPUState* st)
     fol_return(st, &s_fol_tree);
 }
 
-/* ========== D4-b JPA particle position lerp (MODERNGEKKO_F60_JPA_FIX) ========
- * JPABaseParticle::mGlobalPosition (+0x28, 3 f32) is recomputed every calc
- * tick (calcPosition, JPAParticle.cpp ~L204-207) and read by the draw
- * visitors — under the split particles step at 30 Hz. Fix: at each L-frame
- * Painter entry rebuild a host table {addr -> frame, pos} covering every
- * live particle; at the R-frame entry write lerp(L_pos, live_pos, alpha)
- * into mGlobalPosition for entries whose live mCurFrame == stored + 1.0 —
- * incFrame() adds exactly 1.0 per calc tick and pooled reuse restarts at
- * -1.0 (JPAParticle.cpp:88/133 initParticle/initChild, :165 incFrame adds
- * exactly 1.0), so frame continuity IS the identity key: a recycled address
- * can only alias when the L snapshot held frame -1.0 — a corner narrow
- * enough to accept (one-frame midpoint on a just-spawned particle). New
- * particles (miss) and recycled ones (mismatch) are never lerped.
- * Restore: the next L-entry writes the recorded live positions back before
+/* ========== D4-b JPA particle state lerp (MODERNGEKKO_F60_JPA_FIX /
+ *                                      MODERNGEKKO_F60_JPA_FULL) ===========
+ * JPABaseParticle's draw-consumed fields are all recomputed every calc tick
+ * (calcPosition / JPADraw::calcParticle — JPAParticle.cpp / JPADraw.cpp) and
+ * read by the draw visitors — under the split every animated property steps
+ * at 30 Hz. Fix: at each L-frame Painter entry rebuild a host table
+ * {addr -> frame, draw state} covering every live particle; at the R-frame
+ * entry write lerp(L_state, live_state, alpha) into entries whose live
+ * mCurFrame == stored + 1.0 — incFrame() adds exactly 1.0 per calc tick and
+ * pooled reuse restarts at -1.0 (JPAParticle.cpp:88/133 initParticle/
+ * initChild, :165 incFrame), so frame continuity IS the identity key: a
+ * recycled address can only alias when the L snapshot held frame -1.0,
+ * which live-list particles never carry (init + incFrame happen inside one
+ * calc pass). FULL adds a second identity key, mLifeTime — constant per
+ * particle after init — so an exotic re-init at the same address can never
+ * alias even if its frame happened to continue.
+ * FULL (default on) lerps every draw-read field that animates per tick:
+ *   mLocalPosition +0x1C   dirTypePos/PosInv quads (JPADrawVisitor.cpp:369)
+ *   mGlobalPosition +0x28  every vertex-bearing exec + dirTypePrevPtcl
+ *   mVelocity +0x34        dirTypeVel + ExecLine length (L366, L642)
+ *   mDrawParams.mAxis +0x8C  persistent draw-mutated orientation
+ *                          (dPa_J3DmodelEmitter_c::draw, d_particle.cpp:95)
+ *   mScaleX/mScaleY +0x9C/+0xA0  all quad/line/point sizes
+ *   mAlphaOut +0xAC        TEV alpha (RegisterPrm/Env color execs)
+ *   mPrmColor/mEnvColor +0xB8/+0xBC   per-channel TEV colors
+ *   mRotateAngle +0xC0     rot execs + model emitters — s16-domain shortest-
+ *                          angle lerp (0x10000 = 2pi)
+ * Discrete fields are NEVER lerped: mTexIdx (+0xC6), mStatus (+0xCC),
+ * mCurFrame (the identity key itself), mRotateSpeed/mAlphaWaveRandom/
+ * mLoopOffset/mScaleOut (calc-time inputs). MODERNGEKKO_F60_JPA_FULL=0
+ * falls back to the original position-only lerp with byte-identical
+ * guest writes.
+ * Emitter state draws per-emitter, keyed in a second table by emitter
+ * address; its identity key is mTick.mFrame +0x164 — incFrame() advances it
+ * exactly +1 per calc and create() restarts it at 0, so a pooled emitter
+ * slot can never alias a stored tick >= 0:
+ *   mEmitterTranslation +0x18 / mEmitterDir +0x2C / mEmitterRot +0x24
+ *                          calcEmitterGlobalPosition + calcgReRDirection
+ *                          run at DRAW time (dirTypePrevPtcl head anchor,
+ *                          dirTypeEmtrDir) — attached effects track the
+ *                          interpolated emitter transform
+ *   mTick.mFrame +0x164    global tex scroll (GenPrjTexMtx/SetTexMtx read
+ *                          pbe->getFrame() at draw)
+ *   mDraw.mPrmColor/mEnvColor +0x158/+0x15C   RegisterColorEmitter* execs
+ *   mGlobalRotation +0x1A8 / mGlobalDynamicsScale +0x1D8 /
+ *   mGlobalTranslation +0x1E4      setGlobalSRTMatrix outputs
+ *   mGlobalParticleScale +0x1F0    cb.mGlobalScaleX/Y
+ *   mGlobalPrmColor/mGlobalEnvColor +0x1FC/+0x200   cb.mPrmColor/mEnvColor
+ *                          + getGlobalAlpha() zDraw alpha compare
+ * mDraw.mTexIdx (+0x160) and mTime (+0x168) stay discrete/calc-side.
+ * Restore: the next L-entry writes the recorded live values back before
  * Painter draws — the persistent emitter lists are consumed TWICE (R_k and
- * L_{k+1}), so an unrestored lerp would leak into the authoritative L frame.
- * calcPosition() rewrites the field for every live particle each tick
- * anyway, so restore is for exactness, not leak-safety.
+ * L_{k+1}), so an unrestored lerp would leak into the authoritative L frame
+ * AND into the next calc tick's inputs (calcPosition reads mLocalPosition).
  * Traversal: mEmitterMng (dPa_control_c .sbss 0x803F6C28, symbols.txt:18804)
  * -> mEmtrGroup[16] @+0x50 (JPAEmitterManager.h:47; JSUPtrList: mHead@+0,
  * mTail@+4, mLength@+8, JSUList.h:73-75) -> emitters via mLink @+0x90
@@ -4275,31 +4317,98 @@ static void on_tree_draw_return(CPUState* st)
  * Particle link mLink is member +0x00 (JPAParticle.h:91), so link addr ==
  * particle addr; mGlobalPosition @+0x28, mCurFrame @+0x78
  * (JPAParticle.h:92,100). Bounded: 16 groups, <=256 emitters each, <=4096
- * particles per walk; every pointer in_ram-guarded. The table is rebuilt
- * (memset + reseed) at every L entry — ~320KB memset once per 33ms, and it
- * self-heals any stale address forever. */
+ * particles per walk; every pointer in_ram-guarded. The tables are rebuilt
+ * (memset + reseed) at every L entry and self-heal any stale address. */
 #define JPA_MGR_EA      0x803F6C28u   /* dPa_control_c::mEmitterMng           */
 #define JPA_OFF_GROUPS  0x50u         /* JPAEmitterManager::mEmtrGroup[16]    */
 #define JPA_EMTR_LINK   0x90u         /* JPABaseEmitter::mLink                */
 #define JPA_EMTR_ACT    0x17Cu        /* JPABaseEmitter::mActiveParticles     */
 #define JPA_EMTR_CHLD   0x188u        /* JPABaseEmitter::mChildParticles      */
+#define JPA_EMTR_SPAN   0x210u        /* bytes we touch inside an emitter     */
+#define JPA_EMTR_ETRS   0x18u         /* mEmitterTranslation (TVec3<f32>)     */
+#define JPA_EMTR_EROT   0x24u         /* mEmitterRot (TVec3<s16>, degrees)    */
+#define JPA_EMTR_EDIR   0x2Cu         /* mEmitterDir (TVec3<f32>)             */
+#define JPA_EMTR_DCLR   0x158u        /* mDraw.mPrmColor / mEnvColor          */
+#define JPA_EMTR_TICK   0x164u        /* mTick.mFrame (f32)                   */
+#define JPA_EMTR_GROT   0x1A8u        /* mGlobalRotation (SMatrix34C, 12 f32) */
+#define JPA_EMTR_GDYN   0x1D8u        /* mGlobalDynamicsScale (TVec3<f32>)    */
+#define JPA_EMTR_GTRN   0x1E4u        /* mGlobalTranslation (TVec3<f32>)      */
+#define JPA_EMTR_GPSCL  0x1F0u        /* mGlobalParticleScale (TVec3<f32>)    */
+#define JPA_EMTR_GCLR   0x1FCu        /* mGlobalPrmColor / mGlobalEnvColor    */
+#define JPA_EMTR_FLAGS  0x20Cu        /* mFlags — JPAEmtrStts_*               */
+#define JPA_EMTRFL_STOPCALC 0x02u     /* JPAEmtrStts_StopCalc                 */
+#define JPA_PTCL_LOCAL  0x1Cu         /* JPABaseParticle::mLocalPosition      */
 #define JPA_PTCL_GLOBAL 0x28u         /* JPABaseParticle::mGlobalPosition     */
 #define JPA_PTCL_FRAME  0x78u         /* JPABaseParticle::mCurFrame           */
+#define JPA_PTCL_LIFE   0x7Cu         /* JPABaseParticle::mLifeTime           */
+#define JPA_PTCL_AXIS   0x8Cu         /* JPADrawParams::mAxis (TVec3<f32>)    */
+#define JPA_PTCL_SCL    0x9Cu         /* JPADrawParams::mScaleX/mScaleY       */
+#define JPA_PTCL_AOUT   0xACu         /* JPADrawParams::mAlphaOut             */
+#define JPA_PTCL_PRM    0xB8u         /* JPADrawParams::mPrmColor (GXColor)   */
+#define JPA_PTCL_ENV    0xBCu         /* JPADrawParams::mEnvColor (GXColor)   */
+#define JPA_PTCL_ANGLE  0xC0u         /* JPADrawParams::mRotateAngle (u16)    */
 #define JPA_LINK_NEXT   0x0Cu         /* JSUPtrLink::mNext                    */
-#define JPA_PTCL_SPAN   0x80u         /* bytes we touch inside a particle     */
+#define JPA_PTCL_SPAN   0xD4u         /* bytes we touch inside a particle     */
 #define JPA_MAX_EMTR    256u          /* per-group emitter walk cap           */
 #define JPA_MAX_PTCL    4096u         /* total particles per walk             */
 #define JPA_HASH_SIZE   8192u
 #define JPA_HASH_PROBE  8u
+#define JPA_EHASH_SIZE  512u          /* emitter pool is 150 — 512 slots      */
+#define JPA_EHASH_PROBE 8u
+
+/* One endpoint of the particle draw-state pair: every field the R-frame
+ * temporarily writes into the live object. `l` = what the previous L-frame
+ * drew (prev endpoint), `r` = the live value captured at R-entry (next
+ * endpoint + restore source). */
+typedef struct {
+    float    loc[3];    /* mLocalPosition                    +0x1C */
+    float    pos[3];    /* mGlobalPosition                   +0x28 */
+    float    vel[3];    /* mVelocity                         +0x34 */
+    float    axis[3];   /* mDrawParams.mAxis                 +0x8C */
+    float    scl[2];    /* mDrawParams.mScaleX/mScaleY   +0x9C/+A0 */
+    float    aout;      /* mDrawParams.mAlphaOut             +0xAC */
+    uint16_t angle;     /* mDrawParams.mRotateAngle          +0xC0 */
+    uint16_t pad0;
+    uint32_t prm;       /* mDrawParams.mPrmColor             +0xB8 */
+    uint32_t env;       /* mDrawParams.mEnvColor             +0xBC */
+} JpaVis;   /* 72B */
 
 typedef struct {
     uint32_t addr;      /* guest particle address; 0 = empty slot           */
     float    frame;     /* mCurFrame observed at the L snapshot             */
-    float    lpos[3];   /* position the last L-frame drew                   */
-    float    rpos[3];   /* live position read at the R entry (for restore)  */
-    uint8_t  injected;  /* live mGlobalPosition currently holds our lerp    */
+    float    lifetime;  /* mLifeTime — second identity key (FULL only)      */
+    uint8_t  injected;  /* live draw fields currently hold our lerp         */
+    uint8_t  pad[3];
+    JpaVis   l;         /* L endpoint (what the last L frame drew)          */
+    JpaVis   r;         /* live values read at R entry (restore + endpoint) */
 } JpaEnt;
 static JpaEnt s_jpa[JPA_HASH_SIZE];
+
+/* Emitter-side endpoint pair — same l/r contract as JpaVis. */
+typedef struct {
+    float    etrs[3];   /* mEmitterTranslation                +0x18  */
+    int16_t  erot[3];   /* mEmitterRot (degrees per axis)     +0x24  */
+    uint16_t pad0;
+    float    edir[3];   /* mEmitterDir                        +0x2C  */
+    uint32_t dprm;      /* mDraw.mPrmColor                    +0x158 */
+    uint32_t denv;      /* mDraw.mEnvColor                    +0x15C */
+    float    tick;      /* mTick.mFrame                       +0x164 */
+    float    rot[12];   /* mGlobalRotation (3x4)              +0x1A8 */
+    float    dyn[3];    /* mGlobalDynamicsScale               +0x1D8 */
+    float    trn[3];    /* mGlobalTranslation                 +0x1E4 */
+    float    pscl[3];   /* mGlobalParticleScale               +0x1F0 */
+    uint32_t gprm;      /* mGlobalPrmColor                    +0x1FC */
+    uint32_t genv;      /* mGlobalEnvColor                    +0x200 */
+} JpaEVis;  /* 136B */
+
+typedef struct {
+    uint32_t addr;      /* emitter object address; 0 = empty slot           */
+    uint8_t  injected;  /* live emitter fields currently hold our lerp      */
+    uint8_t  pad[7];
+    JpaEVis  l;         /* L endpoint (l.tick is also the identity key)     */
+    JpaEVis  r;         /* live values read at R entry                      */
+} JpaEmtrEnt;
+static JpaEmtrEnt s_jpae[JPA_EHASH_SIZE];
 
 static JpaEnt* jpa_lookup(uint32_t addr)
 {
@@ -4310,6 +4419,237 @@ static JpaEnt* jpa_lookup(uint32_t addr)
             return e;
     }
     return 0;   /* probe chain full — caller leaves live untouched */
+}
+
+static JpaEmtrEnt* jpa_elookup(uint32_t addr)
+{
+    const uint32_t h = ((addr >> 8) * 2654435761u) >> (32u - 9u);
+    for (uint32_t p = 0; p < JPA_EHASH_PROBE; ++p) {
+        JpaEmtrEnt* e = &s_jpae[(h + p) & (JPA_EHASH_SIZE - 1u)];
+        if (e->addr == 0u || e->addr == addr)
+            return e;
+    }
+    return 0;
+}
+
+static float jpa_lf(float a, float b, float alpha)
+{
+    const float v = a + alpha * (b - a);
+    return isfinite(v) ? v : b;     /* same non-finite policy as J3D */
+}
+
+static void jpa_lerp3(float* out, const float* a, const float* b, float alpha)
+{
+    for (int k = 0; k < 3; ++k)
+        out[k] = jpa_lf(a[k], b[k], alpha);
+}
+
+/* GXColor packs 4 u8 channels big-endian — per-channel lerp, rounded and
+ * clamped (the TEV color math consumes integer channels). */
+static uint32_t jpa_lerp_color(uint32_t a, uint32_t b, float alpha)
+{
+    uint32_t out = 0;
+    for (int i = 0; i < 4; ++i) {
+        const uint32_t sh = (uint32_t)(3 - i) * 8u;
+        const int ca = (int)((a >> sh) & 0xFFu);
+        const int cb = (int)((b >> sh) & 0xFFu);
+        const int d = cb - ca;
+        int c = ca + (int)(d * alpha + (d >= 0 ? 0.5f : -0.5f));
+        if (c < 0) c = 0; else if (c > 255) c = 255;
+        out |= (uint32_t)c << sh;
+    }
+    return out;
+}
+
+/* 16-bit angle domain: 0x10000 = one full turn (JMASSin/JMASCos argument
+ * domain — mRotateAngle accumulates mRotateSpeed and wraps mod 2^16). The
+ * shortest signed delta is the only correct blend across the wrap point. */
+static uint16_t jpa_lerp_angle(uint16_t a, uint16_t b, float alpha)
+{
+    const int32_t d = (int32_t)(int16_t)(uint16_t)(b - a);
+    const int32_t v = (int32_t)a +
+        (int32_t)(d * alpha + (d >= 0 ? 0.5f : -0.5f));
+    return (uint16_t)v;
+}
+
+/* mEmitterRot stores DEGREES per axis (calcgReRDirection maps deg -> the
+ * 0x10000-turn domain via (deg << 14) / 90). The physical angle wraps on a
+ * 360-degree circle (+179 -> -179 is a 2-degree step), so the shortest path
+ * must be taken mod 360 — a plain s16 delta would rotate the long way
+ * through 0 across the +-180 boundary. */
+static int16_t jpa_lerp_deg(int16_t a, int16_t b, float alpha)
+{
+    int32_t d = (int32_t)b - (int32_t)a;
+    d %= 360;
+    if (d > 180) d -= 360;
+    else if (d < -180) d += 360;
+    return (int16_t)((int32_t)a +
+        (int32_t)(d * alpha + (d >= 0 ? 0.5f : -0.5f)));
+}
+
+/* Read the full draw-consumed particle field set (FULL mode). */
+static void jpa_rd_vis(CPUState* st, uint32_t p, JpaVis* v)
+{
+    float tmp[9];
+    uint32_t w;
+    rd_f32_arr(st, p + JPA_PTCL_LOCAL, tmp, 9u);   /* loc+pos+vel contiguous */
+    memcpy(v->loc, tmp + 0, 12u);
+    memcpy(v->pos, tmp + 3, 12u);
+    memcpy(v->vel, tmp + 6, 12u);
+    rd_f32_arr(st, p + JPA_PTCL_AXIS, v->axis, 3u);
+    rd_f32_arr(st, p + JPA_PTCL_SCL,  v->scl,  2u);
+    w = rd32_fast(st, p + JPA_PTCL_AOUT);
+    memcpy(&v->aout, &w, 4u);
+    v->prm   = rd32_fast(st, p + JPA_PTCL_PRM);
+    v->env   = rd32_fast(st, p + JPA_PTCL_ENV);
+    v->angle = (uint16_t)rd16_fast(st, p + JPA_PTCL_ANGLE);
+    v->pad0  = 0;
+}
+
+static void jpa_lerp_vis(const JpaVis* a, const JpaVis* b, float alpha,
+                         JpaVis* o)
+{
+    jpa_lerp3(o->loc, a->loc, b->loc, alpha);
+    jpa_lerp3(o->pos, a->pos, b->pos, alpha);
+    jpa_lerp3(o->vel, a->vel, b->vel, alpha);
+    jpa_lerp3(o->axis, a->axis, b->axis, alpha);
+    o->scl[0] = jpa_lf(a->scl[0], b->scl[0], alpha);
+    o->scl[1] = jpa_lf(a->scl[1], b->scl[1], alpha);
+    o->aout   = jpa_lf(a->aout,  b->aout,  alpha);
+    o->angle  = jpa_lerp_angle(a->angle, b->angle, alpha);
+    o->prm    = jpa_lerp_color(a->prm, b->prm, alpha);
+    o->env    = jpa_lerp_color(a->env, b->env, alpha);
+}
+
+static void jpa_wr_vis(CPUState* st, uint32_t p, const JpaVis* v)
+{
+    float tmp[9];
+    uint32_t w;
+    memcpy(tmp + 0, v->loc, 12u);
+    memcpy(tmp + 3, v->pos, 12u);
+    memcpy(tmp + 6, v->vel, 12u);
+    wr_f32_arr(st, p + JPA_PTCL_LOCAL, tmp, 9u);
+    wr_f32_arr(st, p + JPA_PTCL_AXIS, v->axis, 3u);
+    wr_f32_arr(st, p + JPA_PTCL_SCL,  v->scl,  2u);
+    memcpy(&w, &v->aout, 4u);
+    wr32_fast(st, p + JPA_PTCL_AOUT, w);
+    wr32_fast(st, p + JPA_PTCL_PRM, v->prm);
+    wr32_fast(st, p + JPA_PTCL_ENV, v->env);
+    wr16_fast(st, p + JPA_PTCL_ANGLE, v->angle);
+}
+
+/* Emitter draw-state read — every field JPADraw/mDraw consume that also
+ * animates per tick. mEmitterRot (+0x24) packs three s16 degrees:
+ * x|y in one word at +0x24, z in the high half of the word at +0x28. */
+static void jpa_rd_evis(CPUState* st, uint32_t e, JpaEVis* v)
+{
+    uint32_t w;
+    rd_f32_arr(st, e + JPA_EMTR_ETRS, v->etrs, 3u);
+    w = rd32_fast(st, e + JPA_EMTR_EROT);
+    v->erot[0] = (int16_t)(w >> 16);
+    v->erot[1] = (int16_t)(w & 0xFFFFu);
+    v->erot[2] = (int16_t)rd16_fast(st, e + JPA_EMTR_EROT + 4u);
+    rd_f32_arr(st, e + JPA_EMTR_EDIR, v->edir, 3u);
+    v->dprm = rd32_fast(st, e + JPA_EMTR_DCLR);
+    v->denv = rd32_fast(st, e + JPA_EMTR_DCLR + 4u);
+    w = rd32_fast(st, e + JPA_EMTR_TICK);
+    memcpy(&v->tick, &w, 4u);
+    rd_f32_arr(st, e + JPA_EMTR_GROT, v->rot, 12u);
+    rd_f32_arr(st, e + JPA_EMTR_GDYN, v->dyn, 3u);
+    rd_f32_arr(st, e + JPA_EMTR_GTRN, v->trn, 3u);
+    rd_f32_arr(st, e + JPA_EMTR_GPSCL, v->pscl, 3u);
+    v->gprm = rd32_fast(st, e + JPA_EMTR_GCLR);
+    v->genv = rd32_fast(st, e + JPA_EMTR_GCLR + 4u);
+}
+
+static void jpa_lerp_evis(const JpaEVis* a, const JpaEVis* b, float alpha,
+                          JpaEVis* o)
+{
+    jpa_lerp3(o->etrs, a->etrs, b->etrs, alpha);
+    for (int j = 0; j < 3; ++j)
+        o->erot[j] = jpa_lerp_deg(a->erot[j], b->erot[j], alpha);
+    jpa_lerp3(o->edir, a->edir, b->edir, alpha);
+    o->dprm = jpa_lerp_color(a->dprm, b->dprm, alpha);
+    o->denv = jpa_lerp_color(a->denv, b->denv, alpha);
+    o->tick = jpa_lf(a->tick, b->tick, alpha);
+    for (int j = 0; j < 12; ++j)
+        o->rot[j] = jpa_lf(a->rot[j], b->rot[j], alpha);
+    jpa_lerp3(o->dyn,  a->dyn,  b->dyn,  alpha);
+    jpa_lerp3(o->trn,  a->trn,  b->trn,  alpha);
+    jpa_lerp3(o->pscl, a->pscl, b->pscl, alpha);
+    o->gprm = jpa_lerp_color(a->gprm, b->gprm, alpha);
+    o->genv = jpa_lerp_color(a->genv, b->genv, alpha);
+}
+
+static void jpa_wr_evis(CPUState* st, uint32_t e, const JpaEVis* v)
+{
+    uint32_t w;
+    wr_f32_arr(st, e + JPA_EMTR_ETRS, v->etrs, 3u);
+    /* both s16 lanes live in the +0x24 word; z alone at +0x28 */
+    wr32_fast(st, e + JPA_EMTR_EROT,
+              ((uint32_t)(uint16_t)v->erot[0] << 16) |
+              (uint32_t)(uint16_t)v->erot[1]);
+    wr16_fast(st, e + JPA_EMTR_EROT + 4u, (uint16_t)v->erot[2]);
+    wr_f32_arr(st, e + JPA_EMTR_EDIR, v->edir, 3u);
+    wr32_fast(st, e + JPA_EMTR_DCLR,     v->dprm);
+    wr32_fast(st, e + JPA_EMTR_DCLR + 4u, v->denv);
+    memcpy(&w, &v->tick, 4u);
+    wr32_fast(st, e + JPA_EMTR_TICK, w);
+    wr_f32_arr(st, e + JPA_EMTR_GROT,  v->rot, 12u);
+    wr_f32_arr(st, e + JPA_EMTR_GDYN,  v->dyn,  3u);
+    wr_f32_arr(st, e + JPA_EMTR_GTRN,  v->trn,  3u);
+    wr_f32_arr(st, e + JPA_EMTR_GPSCL, v->pscl, 3u);
+    wr32_fast(st, e + JPA_EMTR_GCLR,     v->gprm);
+    wr32_fast(st, e + JPA_EMTR_GCLR + 4u, v->genv);
+}
+
+static void jpa_emtr_visit(CPUState* st, uint32_t emtr, int rframe,
+                           float alpha)
+{
+    JpaEmtrEnt* e = jpa_elookup(emtr);
+    if (!rframe) {
+        if (!e) return;
+        jpa_rd_evis(st, emtr, &e->l);
+        memcpy(&e->r, &e->l, sizeof(JpaEVis));
+        e->addr = emtr;
+        e->injected = 0;
+        return;
+    }
+    if (!e || e->addr != emtr)
+        return;   /* spawned since the L snapshot / table full */
+    if (e->injected) {
+        /* Consecutive R-frame: rewrite from the stored pair at the new
+         * alpha — live fields still hold our previous lerp. */
+        JpaEVis o;
+        jpa_lerp_evis(&e->l, &e->r, alpha, &o);
+        jpa_wr_evis(st, emtr, &o);
+        return;
+    }
+    /* Continuity: calc() runs mTick.incFrame() exactly once per tick; a
+     * pooled slot restarts at 0 so reuse can never alias a stored tick.
+     * Exception: a StopCalc emitter's tick freezes while its before/after
+     * calc callbacks still run each tick (JPAEmitter.cpp:243-247 — attached
+     * emitters use this to track a parent). Accept an unchanged tick only
+     * when StopCalc is still set; a fresh pool reuse can never carry it
+     * (create() re-inits mFlags to FirstEmit|RateStepEmit). */
+    {
+        uint32_t w = rd32_fast(st, emtr + JPA_EMTR_TICK);
+        float tick;
+        memcpy(&tick, &w, 4u);
+        if (tick != e->l.tick + 1.0f) {
+            const uint32_t flags = rd32_fast(st, emtr + JPA_EMTR_FLAGS);
+            if (!(flags & JPA_EMTRFL_STOPCALC) || tick != e->l.tick)
+                return;   /* recycled — leave live untouched */
+        }
+    }
+    jpa_rd_evis(st, emtr, &e->r);
+    {
+        JpaEVis o;
+        jpa_lerp_evis(&e->l, &e->r, alpha, &o);
+        jpa_wr_evis(st, emtr, &o);
+    }
+    e->injected = 1;
+    ++s_dbg_jpaeinj;
 }
 
 static void jpa_write_lerp(CPUState* st, uint32_t p,
@@ -4330,15 +4670,20 @@ static void jpa_visit(CPUState* st, uint32_t p, int rframe, float alpha)
     float frame;
     JpaEnt* e = jpa_lookup(p);
     if (!rframe) {
-        /* L walk: (re)seed — the pos this frame draws is the prev endpoint */
+        /* L walk: (re)seed — the state this frame drew is the prev endpoint */
         if (!e) return;
-        rd_f32_arr(st, p + JPA_PTCL_GLOBAL, pos, 3u);
+        if (s_jpa_full) {
+            jpa_rd_vis(st, p, &e->l);
+            fw = rd32_fast(st, p + JPA_PTCL_LIFE);
+            memcpy(&e->lifetime, &fw, 4u);
+        } else {
+            rd_f32_arr(st, p + JPA_PTCL_GLOBAL, e->l.pos, 3u);
+        }
+        memcpy(&e->r, &e->l, sizeof(JpaVis));
         fw = rd32_fast(st, p + JPA_PTCL_FRAME);
         memcpy(&frame, &fw, 4u);
         e->addr = p;
         e->frame = frame;
-        memcpy(e->lpos, pos, sizeof(pos));
-        memcpy(e->rpos, pos, sizeof(pos));
         e->injected = 0;
         return;
     }
@@ -4346,20 +4691,38 @@ static void jpa_visit(CPUState* st, uint32_t p, int rframe, float alpha)
         return;   /* not in the L snapshot (spawned since / table full) */
     if (e->injected) {
         /* Consecutive R-frame: live still holds our previous lerp — rewrite
-         * from the stored pair at the new alpha. Never read live as rpos. */
-        jpa_write_lerp(st, p, e->lpos, e->rpos, alpha);
+         * from the stored pair at the new alpha. Never read live as r-side. */
+        if (s_jpa_full) {
+            JpaVis o;
+            jpa_lerp_vis(&e->l, &e->r, alpha, &o);
+            jpa_wr_vis(st, p, &o);
+        } else {
+            jpa_write_lerp(st, p, e->l.pos, e->r.pos, alpha);
+        }
         return;
     }
     fw = rd32_fast(st, p + JPA_PTCL_FRAME);
     memcpy(&frame, &fw, 4u);
     if (frame != e->frame + 1.0f)
         return;   /* addr recycled between ticks — not the same particle */
-    rd_f32_arr(st, p + JPA_PTCL_GLOBAL, pos, 3u);
-    memcpy(e->rpos, pos, sizeof(pos));      /* save live for the L restore  */
+    if (s_jpa_full) {
+        float life;
+        JpaVis o;
+        fw = rd32_fast(st, p + JPA_PTCL_LIFE);
+        memcpy(&life, &fw, 4u);
+        if (life != e->lifetime)
+            return;   /* slot re-init at the same addr — not our particle */
+        jpa_rd_vis(st, p, &e->r);   /* save live for the L restore */
+        jpa_lerp_vis(&e->l, &e->r, alpha, &o);
+        jpa_wr_vis(st, p, &o);
+    } else {
+        rd_f32_arr(st, p + JPA_PTCL_GLOBAL, pos, 3u);
+        memcpy(e->r.pos, pos, sizeof(pos));  /* save live for the L restore */
+        jpa_write_lerp(st, p, e->l.pos, e->r.pos, alpha);
+    }
     e->frame = frame;
     e->injected = 1;
     ++s_dbg_jpainj;
-    jpa_write_lerp(st, p, e->lpos, e->rpos, alpha);
 }
 
 static void jpa_walk(CPUState* st, int rframe, float alpha)
@@ -4378,8 +4741,14 @@ static void jpa_walk(CPUState* st, int rframe, float alpha)
              ++ei) {
             const uint32_t emtr = elink - JPA_EMTR_LINK;
             elink = rd32_fast(st, elink + JPA_LINK_NEXT);
-            if (!in_ram(st, emtr, JPA_EMTR_CHLD + 0x0Cu))
-                continue;   /* emitter must span both particle lists */
+            if (!in_ram(st, emtr, JPA_EMTR_SPAN))
+                continue;   /* emitter must span lists + global state */
+            /* Emitter-level draw state lerps in the same walk — once per
+             * emitter, before its particle lists, so dirTypePrevPtcl/
+             * dirTypeEmtrDir inputs already carry the mid-frame transform
+             * when the particles get visited. */
+            if (s_jpa_full)
+                jpa_emtr_visit(st, emtr, rframe, alpha);
             for (int li = 0; li < 2; ++li) {
                 uint32_t p = rd32_fast(st, emtr + pl_off[li]);
                 uint32_t pn = rd32_fast(st, emtr + pl_off[li] + 8u);
@@ -4396,17 +4765,30 @@ static void jpa_walk(CPUState* st, int rframe, float alpha)
     }
 }
 
-/* Write every outstanding lerp back to its particle — must run BEFORE the
- * table is wiped (jpa_lframe rebuild, f60_reset_runtime_state) or the live
- * mGlobalPosition fields keep our midpoint on an authoritative L frame. */
+/* Write every outstanding lerp back to its owner — must run BEFORE the
+ * tables are wiped (jpa_lframe rebuild, f60_reset_runtime_state) or the
+ * live fields keep our midpoint on an authoritative L frame (and the next
+ * calc tick would consume lerped mLocalPosition/mTick.mFrame inputs). */
 static void jpa_restore(CPUState* st)
 {
     for (uint32_t i = 0; i < JPA_HASH_SIZE; ++i) {
         JpaEnt* e = &s_jpa[i];
         if (e->injected) {
             e->injected = 0;
-            if (in_ram(st, e->addr, JPA_PTCL_SPAN))
-                wr_f32_arr(st, e->addr + JPA_PTCL_GLOBAL, e->rpos, 3u);
+            if (in_ram(st, e->addr, JPA_PTCL_SPAN)) {
+                if (s_jpa_full)
+                    jpa_wr_vis(st, e->addr, &e->r);
+                else
+                    wr_f32_arr(st, e->addr + JPA_PTCL_GLOBAL, e->r.pos, 3u);
+            }
+        }
+    }
+    for (uint32_t i = 0; i < JPA_EHASH_SIZE; ++i) {
+        JpaEmtrEnt* e = &s_jpae[i];
+        if (e->injected) {
+            e->injected = 0;
+            if (in_ram(st, e->addr, JPA_EMTR_SPAN))
+                jpa_wr_evis(st, e->addr, &e->r);
         }
     }
 }
@@ -4414,13 +4796,15 @@ static void jpa_restore(CPUState* st)
 static void jpa_lframe(CPUState* st)
 {
     if (!s_jpa_fix) return;
-    /* Restore any lerped positions still outstanding BEFORE Painter re-draws
+    /* Restore any lerped state still outstanding BEFORE Painter re-draws
      * the persistent emitter lists (they are consumed twice: R_k then
      * L_{k+1}). Nothing ran between the R inject and now, so the recorded
      * addrs still name the same particles; the in_ram guard covers a torn-
-     * down manager anyway. */
+     * down manager anyway. Then snapshot live state as the next lerp's L
+     * endpoint. */
     jpa_restore(st);
     memset(s_jpa, 0, sizeof(s_jpa));
+    memset(s_jpae, 0, sizeof(s_jpae));
     jpa_walk(st, 0, 0.0f);
 }
 
@@ -4556,16 +4940,18 @@ static void f60_reset_runtime_state(CPUState* st)
     s_dbg_gp_dup = s_dbg_wnum_dup = s_dbg_cap_dup = 0;
     s_dbg_lightfix = s_dbg_lightbad = 0;
     s_dbg_fader_calls = 0;
-    s_dbg_folinj = s_dbg_jpainj = 0;
+    s_dbg_folinj = s_dbg_jpainj = s_dbg_jpaeinj = 0;
     s_dbg_entrymd = s_dbg_calcent = s_dbg_calcret = 0;
     s_dbg_vcent = s_dbg_vcret = s_dbg_dtor = 0;
     fol_reset(&s_fol_grass);
     fol_reset(&s_fol_flower);
     fol_reset(&s_fol_tree);
-    /* Restore any lerped particle positions before dropping the table —
-     * a disengage edge can land between an R inject and the next L entry. */
+    /* Restore any lerped particle/emitter state before dropping the
+     * tables — a disengage edge can land between an R inject and the next
+     * L entry. */
     if (st) jpa_restore(st);
     memset(s_jpa, 0, sizeof(s_jpa));
+    memset(s_jpae, 0, sizeof(s_jpae));
     if (st)
         s_list_heap = rd8_fast(st, GINF_MCURRHEAP) & 1u;
     else
@@ -4573,8 +4959,8 @@ static void f60_reset_runtime_state(CPUState* st)
 }
 
 /* budget constants for TB-14 */
-static const uint32_t J3D_BUDGET_TYPICAL_KIB = 140; /* 1500*96≈144000 ≈140.6 rounded */
-static const uint32_t J3D_BUDGET_HEAVY_KIB = 300;   /* 3200*96=307200 */
+#define J3D_BUDGET_TYPICAL_KIB 140u /* 1500*96≈144000 ≈140.6 rounded */
+#define J3D_BUDGET_HEAVY_KIB   300u /* 3200*96=307200 */
 
 /* Optional: export to let a future 60Hz-logic sweep (Option C) query
  * whether this frame is logic or render-only, or to let QA sample
