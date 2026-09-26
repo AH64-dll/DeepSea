@@ -256,6 +256,7 @@ static uint64_t s_c_snap_ns = 0, s_c_snap_n = 0;  /* j3d_snapshot_pose  (L) */
 static uint64_t s_c_refr_ns = 0, s_c_refr_n = 0;  /* j3d_rframe_refresh (R) */
 static uint64_t s_c_inj_ns  = 0, s_c_inj_n  = 0;  /* j3d_rframe_inject  (R) */
 static uint64_t s_c_frep_ns = 0, s_c_frep_n = 0;  /* fifo_replay_frame  (R) */
+static uint64_t s_c_jpa_ns  = 0, s_c_jpa_n  = 0;  /* jpa_lframe/jpa_rframe walks */
 
 /* Forward: env/config reader — runs at mod load, before guest starts. */
 static void frame60_accum_on_load(const ModernGekkoModHostApi* api)
@@ -1486,7 +1487,8 @@ static void frame60_cost_report(void)
         "[f60-cost] wL=%u/%.3fms wR=%u/%.3fms wO=%u/%.3fms wtbL=%.0f wtbR=%.0f "
         "Rw=%.1f%% | cumL=%.3fms cumR=%.3fms cumO=%.3fms cRw=%.1f%% "
         "cumLN=%llu cumRN=%llu | "
-        "snap=%.1fus(%llu) refr=%.1fus(%llu) inj=%.1fus(%llu) frep=%.1fus(%llu)\n",
+        "snap=%.1fus(%llu) refr=%.1fus(%llu) inj=%.1fus(%llu) frep=%.1fus(%llu) "
+        "jpaw=%.1fus(%llu)\n",
         s_wl_n, w_l_ms, s_wr_n, w_r_ms, s_wo_n, w_o_ms, w_l_tb, w_r_tb,
         w_rw, c_l_ms, c_r_ms, c_o_ms, c_rw,
         (unsigned long long)s_cost_l_n, (unsigned long long)s_cost_r_n,
@@ -1497,7 +1499,9 @@ static void frame60_cost_report(void)
         s_c_inj_n ? (double)s_c_inj_ns / (double)s_c_inj_n / 1.0e3 : 0.0,
         (unsigned long long)s_c_inj_n,
         s_c_frep_n ? (double)s_c_frep_ns / (double)s_c_frep_n / 1.0e3 : 0.0,
-        (unsigned long long)s_c_frep_n);
+        (unsigned long long)s_c_frep_n,
+        s_c_jpa_n ? (double)s_c_jpa_ns / (double)s_c_jpa_n / 1.0e3 : 0.0,
+        (unsigned long long)s_c_jpa_n);
     s_wl_ns = s_wr_ns = s_wo_ns = 0;
     s_wl_tb = s_wr_tb = s_wo_tb = 0;
     s_wl_n = s_wr_n = s_wo_n = 0;
@@ -1833,7 +1837,11 @@ static void on_painter_skip(CPUState* state)
              * the R-frame's inject must not leak into this authoritative
              * frame), then snapshot live positions as the lerp's L endpoint.
              * Runs at Painter ENTRY, before any particle draw this frame. */
-            jpa_lframe(state);
+            {
+                const uint64_t t0 = s_cost ? host_now_ns() : 0;
+                jpa_lframe(state);
+                if (s_cost) { s_c_jpa_ns += host_now_ns() - t0; ++s_c_jpa_n; }
+            }
             s_fol_cut = 0;
         }
         if (s_vilog)
@@ -1931,8 +1939,11 @@ static void on_painter_skip(CPUState* state)
         /* JPA particles are world-space — they lerp even across a camera cut
          * (the world did not jump, only the view did). Skipped entirely by the
          * noinject probe like every other inject. */
-        if (s_jpa_fix && !s_noinject)
+        if (s_jpa_fix && !s_noinject) {
+            const uint64_t t0 = s_cost ? host_now_ns() : 0;
             jpa_rframe(state, s_interp_alpha);
+            if (s_cost) { s_c_jpa_ns += host_now_ns() - t0; ++s_c_jpa_n; }
+        }
         /* Present-path fix: at 60Hz the R-frame's beginRender always finds
          * drawn != displaying (the L-frame's XFB has not been consumed by VI
          * yet), so exchangeXfb_double takes its else-branch — clearEfb wipes
@@ -4929,6 +4940,7 @@ static void f60_reset_runtime_state(CPUState* st)
     s_c_refr_ns = s_c_refr_n = 0;
     s_c_inj_ns = s_c_inj_n = 0;
     s_c_frep_ns = s_c_frep_n = 0;
+    s_c_jpa_ns = s_c_jpa_n = 0;
     s_dbg_jfast = s_dbg_jmiss = 0;
     s_dbg_lframes = s_dbg_rframes = 0;
     s_dbg_snapcall = s_dbg_skipni = 0;
