@@ -484,7 +484,7 @@ throttle catch-up above 1.0x. Dropping R-frames cures only the first, and
 the median ignores the second. (The first live run averaged instead and
 tripped on a cold shader cache.)
 
-- It degrades after two consecutive windows whose median is below 0.95x. R-frames then take
+- It degrades after two consecutive windows whose median is below 0.90x. R-frames then take
   the duplicate-present path, the same one the overlap guard uses, and
   logic cadence is untouched. The game shows 30 fps at full speed.
 - It retries interpolation after a hold of 15 s. Each failed retry doubles
@@ -498,3 +498,21 @@ tripped on a cold shader cache.)
 
 Transitions are logged to stderr as `[f60] headroom: ...`. Unit coverage is
 in `tests/frame60_accum_test.c` (checks 410-425).
+
+## 13. Emu-thread priority (`MODERNGEKKO_F60_PRIORITY`, default 1)
+
+Bench attribution showed the governor's failure mode on the sea scene is
+scheduling starvation rather than compute: the L+R pair's real host work is
+only a few ms inside each 33.3 ms budget, so an iteration can only stretch
+enough to convict a 0.90x window when an unrelated host process preempts the
+emulation thread. When the split engages, the mod raises the calling (emu)
+thread one notch with `SetThreadPriority(THREAD_PRIORITY_ABOVE_NORMAL)`;
+the in-process GPU/video thread stays at base priority, which is safe
+because its queue never backs up in measured runs (vs_qd ≈ 0). The bump is
+restored on split disengage and on mod unload.
+
+- `0` disables (kill switch), `1` = `ABOVE_NORMAL` (default), `2` =
+  `HIGHEST` for experiments.
+- Applied once per engagement; logged as
+  `[f60] emu thread priority boosted (lvl=N)` under `FRAME60_DEBUG`.
+- Windows-only; other platforms get no-op stubs.

@@ -2130,6 +2130,12 @@ int main(void)
         if (g.degraded || g.probing) return 425;
         for (i = 0; i < 2u * GOV_WINDOW; ++i) GOV_STEP(rt);
 
+        /* GOV_SLOW is 0.90: a sustained ~0.92x is slow-but-fit and must
+         * never degrade (it would have at the old 0.95 threshold). */
+        for (i = 0; i < 4u * GOV_WINDOW; ++i) GOV_STEP(36231884ull);  /* ~0.92x */
+        if (g.degraded || g.probing) return 426;
+        for (i = 0; i < 2u * GOV_WINDOW; ++i) GOV_STEP(rt);
+
         /* sustained 0.85x: degrade within three windows */
         for (n = 0; n < 3u * GOV_WINDOW && !g.degraded; ++n) GOV_STEP(slow);
         if (!g.degraded || n < GOV_WINDOW) return 412;
@@ -2145,6 +2151,16 @@ int main(void)
         for (n = 0; n < GOV_WINDOW + 1u && !g.degraded; ++n) GOV_STEP(slow);
         if (!g.degraded || g.probing) return 416;
         if (g.hold_ns != 2u * GOV_HOLD_MIN_NS) return 417;
+
+        /* a probing window at ~0.92x restores under GOV_SLOW=0.90 (it
+         * re-degraded and doubled the hold when the bar was 0.95) */
+        for (n = 0; n < 2000u && g.degraded; ++n) GOV_STEP(rt);
+        if (g.degraded || !g.probing) return 427;
+        for (i = 0; i < GOV_WINDOW; ++i) GOV_STEP(36231884ull);
+        if (g.degraded || g.probing) return 428;
+        /* get it back to degraded for the dup-speed gate below */
+        for (n = 0; n < 3u * GOV_WINDOW && !g.degraded; ++n) GOV_STEP(slow);
+        if (!g.degraded) return 429;
 
         /* even dup is short of full speed: never retry */
         for (i = 0; i < 3000u; ++i) GOV_STEP(36000000ull);  /* 0.93x, 100 s */
