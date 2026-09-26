@@ -418,9 +418,9 @@ static void frame60_accum_on_load(const ModernGekkoModHostApi* api)
          * kept behind =0 for A/B. SPARSE_WR=1 bounds guest matrix writes to
          * the 48B blocks whose lerp differs from what the live array already
          * holds; =0 restores the full-array write (same visible output).
-         * OVLP_PEEK=1 narrows the overlap dup gate to the request's mIsPeek
-         * window (cover+swap+task reveal — the only stretch where teardown
-         * frees can land); =0 restores dup-for-the-whole-request. */
+         * OVLP_PEEK=1 narrows the overlap dup gate to the request's teardown
+         * phases (mPhs.id >= 4 — the scene-swap boundary where frees can
+         * land); =0 restores dup-for-the-whole-request. */
         const char* de = getenv("MODERNGEKKO_F60_DIRTY_EXACT");
         if (de) s_dirty_exact = (de[0] != '0');
         const char* sw = getenv("MODERNGEKKO_F60_SPARSE_WR");
