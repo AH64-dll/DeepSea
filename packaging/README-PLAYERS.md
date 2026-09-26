@@ -68,6 +68,8 @@ Start=Start, LT/RT=L/R, left stick=Main Stick, right stick=C-Stick, D-Pad
 matches, rumble on both motors. Open the launcher's **Controllers** section
 to pick the device for each port (XInput, DirectInput, keyboard), remap any
 GameCube control by clicking it and pressing a control, or reset to defaults.
+The camera stick uses normal vertical direction by default; **Invert camera
+stick Y** in the port's settings reverses it.
 The profile is saved to `assets\user-dir\Config\GCPadNew.ini` (the
 `.xinput` file beside it is a known-good template). With no pad profile,
 keyboard defaults apply.

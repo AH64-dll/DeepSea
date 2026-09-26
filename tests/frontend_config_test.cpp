@@ -277,6 +277,7 @@ int main() {
       !generated.contains("Buttons/Z = `Shoulder R`\n") ||
       !generated.contains("Main Stick/Up = `Left Y+`\n") ||
       !generated.contains("C-Stick/Up = `Right Y+`\n") ||
+      !generated.contains("C-Stick/Down = `Right Y-`\n") ||
       !generated.contains("Triggers/L-Analog = `Trigger L`\n") ||
       !generated.contains("Rumble/Motor = `Motor L` | `Motor R`\n") ||
       !generated.contains("[GCPad2]\nDevice = SDL/1/Second Controller\n") ||
@@ -694,8 +695,15 @@ int main() {
   if (find_default(pad_defaults, "Buttons/A") != "`Button A`" ||
       find_default(pad_defaults, "Buttons/Z") != "`Shoulder R`" ||
       find_default(pad_defaults, "Main Stick/Up") != "`Left Y+`" ||
+      find_default(pad_defaults, "C-Stick/Up") != "`Right Y-`" ||
+      find_default(pad_defaults, "C-Stick/Down") != "`Right Y+`" ||
       find_default(pad_defaults, "Rumble/Motor").empty())
     return 53;
+  const auto sdl_defaults =
+      moderngekko::frontend::DefaultPadControls("SDL/0/Gamepad");
+  if (find_default(sdl_defaults, "C-Stick/Up") != "`Right Y+`" ||
+      find_default(sdl_defaults, "C-Stick/Down") != "`Right Y-`")
+    return 56;
   const auto keyboard_defaults =
       moderngekko::frontend::DefaultPadControls("DInput/0/Keyboard Mouse");
   if (keyboard_defaults.empty() ||

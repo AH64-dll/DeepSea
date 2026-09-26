@@ -918,8 +918,10 @@ DefaultPadControlsImpl(std::string_view device) {
       {"Main Stick/Left", "`Left X-`"},
       {"Main Stick/Right", "`Left X+`"},
       {"Main Stick/Calibration", "100.00"},
-      {"C-Stick/Up", "`Right Y+`"},
-      {"C-Stick/Down", "`Right Y-`"},
+      {"C-Stick/Up", device.starts_with("XInput/") ? "`Right Y-`"
+                                                    : "`Right Y+`"},
+      {"C-Stick/Down", device.starts_with("XInput/") ? "`Right Y+`"
+                                                      : "`Right Y-`"},
       {"C-Stick/Left", "`Right X-`"},
       {"C-Stick/Right", "`Right X+`"},
       {"C-Stick/Calibration", "100.00"},

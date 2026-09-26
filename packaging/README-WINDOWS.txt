@@ -12,6 +12,8 @@ launcher's Controllers section to pick the device for each of ports 1-4
 any GameCube button/stick/trigger/D-pad by clicking it and pressing the
 control you want, or reset to defaults. Default Xbox layout: A=A, B=B, X=X,
 Y=Y, RB=Z, Start=Start, LT/RT=L/R, left stick=Main, right stick=C-stick.
+The camera stick uses normal vertical direction by default. Check "Invert
+camera stick Y" under its controller port to reverse it.
 The profile is saved to assets\user-dir\Config\GCPadNew.ini.
 
 Cutscene skip: hold Z + START together (Xbox pad: RB + Start) during a
