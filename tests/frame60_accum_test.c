@@ -2313,7 +2313,7 @@ int main(void)
 
     /* ==== Wave2 cloth: rel sail packet — L snapshot -> R lerp+flip -> restore ====
      * Exercises cloth_painter_entry/cloth_rframe end-to-end through the
-     * DynamicModuleControl walk + j3dSys drawbuf scan. daSail is
+     * DynamicModuleControl walk + dDlst_list_c draw-buffer scan. daSail is
      * single-buffered: slot1 is the mod's prev-pose scratch. */
     {
         const uint32_t node = 0x80200000u, mod = 0x80210000u;
