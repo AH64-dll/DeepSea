@@ -203,6 +203,8 @@ static uint32_t s_dlt_n = 0;          /* iterations logged by DLTLOG (capped at 
 static uint32_t s_camlog = 0;         /* MODERNGEKKO_F60_CAMLOG — view-matrix cut diagnostics     */
 static uint32_t s_purge_epoch_always = 0; /* MODERNGEKKO_F60_PURGE_EPOCH_ALWAYS — legacy bump     */
 static uint32_t s_force_else = 0;     /* MODERNGEKKO_F60_FORCE_ELSE — L-frames take else-branch */
+static uint32_t s_prio_boost = 1;     /* MODERNGEKKO_F60_PRIORITY — 0=off 1=above-normal 2=highest */
+static int      s_prio_applied = 0;   /* emu thread priority currently raised */
 static uint32_t s_overlap_active = 0; /* fopOvlpM overlap in flight — R-frames take dup present  */
 static uint32_t s_r_dup = 0;          /* this iteration: R-frame was redirected to dup present —
                                        * render-path gates key off it so hybrid dup frames get
@@ -259,6 +261,46 @@ static uint64_t s_c_cam_ns  = 0, s_c_cam_n  = 0;  /* camview L + R frame work */
 static uint64_t s_c_fol_ns  = 0, s_c_fol_n  = 0;  /* foliage entry + return   */
 static uint64_t s_c_lit_ns  = 0, s_c_lit_n  = 0;  /* dKy_setLight relight     */
 static uint64_t s_hook_calls = 0, s_hook_calls_w = 0; /* mod hook invocations */
+
+/* ---- emu-thread priority boost (MODERNGEKKO_F60_PRIORITY) ------------------
+ * The measured failure mode of the governor is scheduling starvation, not
+ * compute: the L+R pair's real host work is a few ms per 33.3ms window, so
+ * only host preemption can stretch an iteration enough to convict a window
+ * at GOV_SLOW. One notch of priority lets the emu thread reclaim its bursts
+ * against NORMAL-priority contenders (other runners, browsers); the in-
+ * process GPU/video thread stays at base priority and never backed up in
+ * practice (vs_qd ~ 0 across the bench matrix), so the bump is safe. Applied
+ * once per split engagement — mod hooks run on the emu thread — and restored
+ * on disengage/unload. 0=off (kill switch), 1=ABOVE_NORMAL (default),
+ * 2=HIGHEST for experiments. Raw externs keep <windows.h> out of this TU
+ * (same pattern as QueryPerformanceCounter above); constants restated from
+ * WinBase.h. */
+#if defined(_WIN32)
+extern void* GetCurrentThread(void);
+extern int   SetThreadPriority(void* hThread, int nPriority);
+#define MG_PRIO_ABOVE_NORMAL 1
+#define MG_PRIO_HIGHEST      2
+#define MG_PRIO_NORMAL       0
+static void emu_prio_apply(void)
+{
+    if (s_prio_applied || !s_prio_boost) return;
+    const int lvl = (s_prio_boost >= 2u) ? MG_PRIO_HIGHEST : MG_PRIO_ABOVE_NORMAL;
+    if (SetThreadPriority(GetCurrentThread(), lvl)) {
+        s_prio_applied = 1;
+        if (s_debug)
+            fprintf(stderr, "[f60] emu thread priority boosted (lvl=%d)\n", lvl);
+    }
+}
+static void emu_prio_restore(void)
+{
+    if (!s_prio_applied) return;
+    SetThreadPriority(GetCurrentThread(), MG_PRIO_NORMAL);
+    s_prio_applied = 0;
+}
+#else
+static void emu_prio_apply(void)   {}
+static void emu_prio_restore(void) {}
+#endif
 
 /* Forward: env/config reader — runs at mod load, before guest starts. */
 static void frame60_accum_on_load(const ModernGekkoModHostApi* api)
@@ -390,6 +432,9 @@ static void frame60_accum_on_load(const ModernGekkoModHostApi* api)
         const char* fe = getenv("MODERNGEKKO_F60_FORCE_ELSE");
         if (fe && fe[0] == '1')
             s_force_else = 1;
+        const char* pr = getenv("MODERNGEKKO_F60_PRIORITY");
+        if (pr && pr[0])
+            s_prio_boost = (uint32_t)strtoul(pr, 0, 0);
         /* Crash-fix kill switches — defaults are the shipped config; setting
          * =0 or =1 forces the piece off/on for A/B perf isolation.
          * PURGE_FREE controls the four per-free funnels (operator delete x2,
@@ -587,6 +632,7 @@ static void frame60_accum_decide(CPUState* state, uint32_t* disp_out)
          * live-list heap, so this keeps the parity truthful across any
          * unsplit stretch and re-engagement (H1). */
         s_list_heap = rd8_fast(state, GINF_MCURRHEAP) & 1u;
+        emu_prio_restore();
         s_split_mode = 0;
         s_logic_this_frame = 1;
         s_interp_alpha = 0.0f;
@@ -609,6 +655,7 @@ static void frame60_accum_decide(CPUState* state, uint32_t* disp_out)
          * being restored.) */
         f60_reset_runtime_state(state);
         s_jfw_display = disp;
+        emu_prio_apply();
     }
     s_split_mode = 1;
     if (!s_first) {
@@ -4675,10 +4722,6 @@ static void f60_reset_runtime_state(CPUState* st)
         s_list_heap = 0;
 }
 
-/* budget constants for TB-14 */
-static const uint32_t J3D_BUDGET_TYPICAL_KIB = 140; /* 1500*96≈144000 ≈140.6 rounded */
-static const uint32_t J3D_BUDGET_HEAVY_KIB = 300;   /* 3200*96=307200 */
-
 /* Optional: export to let a future 60Hz-logic sweep (Option C) query
  * whether this frame is logic or render-only, or to let QA sample
  * the accumulator at runtime. */
@@ -4975,6 +5018,9 @@ static void frame60_accum_on_unload(void)
      * diagnostics, split trackers, foliage/JPA history — via the shared
      * reset so unload can never drift ahead of the mode-transition path. */
     f60_reset_runtime_state(0);
+    /* If the mod is unloaded mid-split, drop the emu-thread priority back to
+     * NORMAL before the hook plumbing is torn down. */
+    emu_prio_restore();
 }
 
 static ModernGekkoModDesc descriptor = {
