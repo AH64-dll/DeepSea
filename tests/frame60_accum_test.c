@@ -2588,6 +2588,43 @@ int main(void)
         s_logic_this_frame = 1u;
         f60_reset_runtime_state(&state);
         if (s_shd_prev || s_shd_armed) return tfail(536);
+
+        /* --- reals-only scene: no setSimple this tick -> s_shd_bake_ok
+         * stays 0, but real-shadow snapshot/inject must still run (Link's
+         * own shadow is real-type; gating it on the simple bake view would
+         * silently disable the feature in simple-free scenes). --- */
+        if (s_shd_bake_ok) return tfail(540);
+        s_split_mode = 1u;   /* f60_reset_runtime_state cleared it */
+        memset(&s_memory[ctrl - 0x80000000u], 0, SHDC_SPAN);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 0u;
+        s_memory[r0 + SHDR_STATE - 0x80000000u] = 1u;
+        s_memory[r0 + SHDR_ALPHA - 0x80000000u] = 90u;
+        store_be32(&s_memory[r0 + SHDR_KEY - 0x80000000u], 33u);
+        store_be32(&s_memory[r0 + SHDR_MODEL0 - 0x80000000u], 0x80450000u);
+        put_tmtx(r0 + SHDR_VIEW, 0.0f, 0.0f, -100.0f);
+        put_tmtx(r0 + SHDR_RECV, 4.0f, 0.0f, 0.0f);
+        state.pc = SHD_CTRL_DRAW;
+        state.gpr[3] = ctrl;
+        on_void_render_gate(&state);               /* L entry: snapshot */
+        if (!s_shd_prev || s_shd_snum != 0u ||
+            !s_shd_rprev[0].used || s_shd_rprev[0].key != 33u)
+            return tfail(541);
+        /* next build: same owner, moved; inject on R with no bake view */
+        put_tmtx(r0 + SHDR_VIEW, 0.0f, 0.0f, -110.0f);
+        put_tmtx(r0 + SHDR_RECV, 8.0f, 0.0f, 0.0f);
+        s_memory[r0 + SHDR_ALPHA - 0x80000000u] = 70u;
+        s_logic_this_frame = 0u;
+        s_interp_alpha = 0.5f;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);               /* R entry: inject */
+        if (!s_shd_armed || !s_shd_rinj[0]) return tfail(542);
+        if (get_mf(r0 + SHDR_VIEW, 2, 3) != -105.0f) return tfail(543);
+        if (get_mf(r0 + SHDR_RECV, 0, 3) != 6.0f) return tfail(544);
+        if (s_memory[r0 + SHDR_ALPHA - 0x80000000u] != 80u) return tfail(545);
+        on_shd_draw_return(&state);
+        if (get_mf(r0 + SHDR_VIEW, 2, 3) != -110.0f) return tfail(546);
+        if (s_memory[r0 + SHDR_ALPHA - 0x80000000u] != 70u) return tfail(547);
+        s_logic_this_frame = 1u;
     }
 
     return 0;

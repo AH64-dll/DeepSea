@@ -4642,7 +4642,12 @@ static void on_shd_setsimple(CPUState* st)
 /* L-entry snapshot: the entries about to draw are the prev endpoint. Simple
  * matrices are un-baked to world space NOW (inverse work lands on the L
  * frame, off the R-frame's hot path); ids + alpha + real light matrices are
- * captured verbatim. */
+ * captured verbatim. Real matrices are light-space (cMtx_lookAt around the
+ * parallel-light vector — the camera view enters only at draw() through
+ * j3dSys), so they snapshot/inject fine with no bake view at all; gating
+ * the whole snapshot on s_shd_bake_ok would disable real-shadow interp in
+ * every scene where no setSimple ran this tick (Link's own shadow is
+ * real-type via dComIfGd_setShadow's setReal-first path). */
 static void shd_snapshot(CPUState* st, uint32_t ctrl)
 {
     J3DMtx ibv, v;
@@ -4650,11 +4655,7 @@ static void shd_snapshot(CPUState* st, uint32_t ctrl)
     if (!(s_enabled && s_split_mode && s_shadow_interp &&
           s_rframe_render && s_j3d_interp))
         return;
-    if (!in_ram(st, ctrl, SHDC_SPAN) || !s_shd_bake_ok) {
-        s_shd_prev = 0;
-        return;
-    }
-    if (!shd_mtx_inverse(&s_shd_bake, &ibv)) {
+    if (!in_ram(st, ctrl, SHDC_SPAN)) {
         s_shd_prev = 0;
         return;
     }
@@ -4662,15 +4663,18 @@ static void shd_snapshot(CPUState* st, uint32_t ctrl)
     num = rd8_fast(st, ctrl + SHDC_SIMPLE_NUM);
     if (num > SHD_SIMPLE_MAX)
         num = SHD_SIMPLE_MAX;
-    s_shd_snum = num;
-    for (i = 0; i < num; ++i) {
-        const uint32_t e = ctrl + SHDC_SIMPLE_ARR + i * SHDS_SIZE;
-        rd_f32_arr(st, e + SHDS_VOL, v.m[0], 12u);
-        shd_mtx_concat(&ibv, &v, &s_shd_wvol[i]);
-        rd_f32_arr(st, e + SHDS_MTX, v.m[0], 12u);
-        shd_mtx_concat(&ibv, &v, &s_shd_wmtx[i]);
-        s_shd_a_snap[i] = (uint8_t)rd8_fast(st, e + SHDS_ALPHA);
-        s_shd_id_snap[i] = s_shd_id_live[i];
+    s_shd_snum = 0;
+    if (num && s_shd_bake_ok && shd_mtx_inverse(&s_shd_bake, &ibv)) {
+        s_shd_snum = num;
+        for (i = 0; i < num; ++i) {
+            const uint32_t e = ctrl + SHDC_SIMPLE_ARR + i * SHDS_SIZE;
+            rd_f32_arr(st, e + SHDS_VOL, v.m[0], 12u);
+            shd_mtx_concat(&ibv, &v, &s_shd_wvol[i]);
+            rd_f32_arr(st, e + SHDS_MTX, v.m[0], 12u);
+            shd_mtx_concat(&ibv, &v, &s_shd_wmtx[i]);
+            s_shd_a_snap[i] = (uint8_t)rd8_fast(st, e + SHDS_ALPHA);
+            s_shd_id_snap[i] = s_shd_id_live[i];
+        }
     }
     for (j = 0; j < SHD_REAL_MAX; ++j) {
         const uint32_t e = ctrl + SHDC_REAL_ARR + j * SHDR_SIZE;
@@ -4700,6 +4704,7 @@ static void shd_inject(CPUState* st, uint32_t ctrl, uint32_t viewptr)
     J3DMtx vr, ibv;
     uint8_t used[SHD_SIMPLE_MAX];
     uint32_t num, i, j;
+    int do_simple = 0;
     const float alpha = s_interp_alpha;
     if (!(s_enabled && s_split_mode && s_shadow_interp &&
           s_rframe_render && s_j3d_interp))
@@ -4708,21 +4713,26 @@ static void shd_inject(CPUState* st, uint32_t ctrl, uint32_t viewptr)
         return;
     if (alpha <= 0.0f || alpha >= 1.0f)
         return;
-    if (!s_shd_prev || !s_shd_bake_ok)
+    if (!s_shd_prev)
         return;
-    if (!in_ram(st, ctrl, SHDC_SPAN) || !in_ram(st, viewptr, 48u))
+    if (!in_ram(st, ctrl, SHDC_SPAN))
         return;
-    rd_f32_arr(st, viewptr, vr.m[0], 12u);
-    if (!shd_mtx_inverse(&s_shd_bake, &ibv))
-        return;   /* s_shd_bake now holds THIS build's bake view */
     s_shd_self = ctrl;
-    memset(used, 0, sizeof(used));
     memset(s_shd_sinj, 0, sizeof(s_shd_sinj));
     memset(s_shd_rinj, 0, sizeof(s_shd_rinj));
     num = rd8_fast(st, ctrl + SHDC_SIMPLE_NUM);
     if (num > SHD_SIMPLE_MAX)
         num = SHD_SIMPLE_MAX;
-    for (i = 0; i < num; ++i) {
+    /* Simples need the bake view (to un-bake live matrices) and this pass's
+     * view arg (to re-bake). Reals are light-space and run without either —
+     * do not let a simple-free tick disable real-shadow interpolation. */
+    if (num && s_shd_bake_ok && in_ram(st, viewptr, 48u)) {
+        rd_f32_arr(st, viewptr, vr.m[0], 12u);
+        if (shd_mtx_inverse(&s_shd_bake, &ibv))
+            do_simple = 1;  /* s_shd_bake = THIS build's bake view */
+    }
+    memset(used, 0, sizeof(used));
+    for (i = 0; do_simple && i < num; ++i) {
         const uint32_t e = ctrl + SHDC_SIMPLE_ARR + i * SHDS_SIZE;
         J3DMtx lv, lm, wv, wm, mv, mm, iv, im;
         uint32_t match = 0xFFFFFFFFu, id;
