@@ -1201,12 +1201,28 @@ static void rel_loader_write_journal(u32 offset, u32 size, void* user) {
      * only because the savestate snapshots pre-teardown heap state.
      * Fix: on the wsLoadStatus-pointer store (the LAST of init()'s three
      * static stores, issued BEFORE registWaveBankWS reads any entry; fires
-     * again on audio re-init = R7-style re-arm), copy all three arrays plus
-     * the per-entry name strings into loader-reserved stable RAM between
-     * the SE carve and the streamList slot, and repoint the statics. Guest
-     * code reaches these arrays ONLY through the statics (getWaveLoadStatus
-     * / setWsLoadStatus / init), so the move is transparent; the abandoned
-     * L-band originals are never read again. */
+     * again on audio re-init = R7-style re-arm), copy all three arrays
+     * VERBATIM into loader-reserved stable RAM between the SE carve and
+     * the streamList slot, and repoint the statics. Guest code reaches
+     * these arrays ONLY through the statics (getWaveLoadStatus /
+     * setWsLoadStatus / init), so the move is transparent; the abandoned
+     * L-band originals are never read again.
+     *
+     * field_0x0 of each initOnCodeWs entry is NOT a name string — it
+     * points at a WSYS wave-system blob inside the JaiInit.aaf temp
+     * buffer (still resident here; it is freed only after
+     * checkInitDataOnMemory returns). The blob is dereferenced only by
+     * the registWaveBankWS parse that runs later in this same init()
+     * call; afterwards field_0x0 serves purely as the non-NULL sentinel
+     * the initOnCodeWs loops test. Keeping the pointer verbatim is
+     * therefore both safe and required: the earlier "copy the name
+     * string" carve truncated every blob at its first NUL (byte 4 of
+     * 'WSYS') and repointed field_0x0 at the 32-byte stub, so WSParser
+     * read a zeroed header (mCtrlGroupOffset=0 -> mCtrlGroupCount=0),
+     * built 65 zero-group TBasicWaveBanks, and every
+     * WaveBankMgr::loadWave() returned false — no .aw was ever loaded
+     * into ARAM, which is why all sequenced BGM/SE were silent while
+     * .afc streams kept playing. */
     if (offset == 0x3F758Cu && size == 4u) {
         static const u32 kWsBase = 0x80408000u;
         u32 iocws = rel_rd32(0x803F7584u);
@@ -1215,11 +1231,11 @@ static void rel_loader_write_journal(u32 offset, u32 size, void* user) {
         u32 wsmax2 = rel_rd32(0x803F7590u);
         /* wsmax2 is guest RAM: the carve must fit in the 0x2000 bytes between
          * kWsBase and the streamList slot at 0x8040A000 or it tramples that
-         * loader-owned copy. Entries+names use (wsmax2*44 + 31) & ~31, then
-         * align32(wsmax2*4) for wsGroupNumber and wsmax2*4 for wsLoadStatus.
-         * wsmax2 < 256 keeps the multiply bounded; the footprint check below
-         * is the real gate (wsmax2 >= ~158 would overflow the window). */
-        u32 ws_need = ((wsmax2 * 44u + 31u) & ~31u) +
+         * loader-owned copy. Entries+sentinel use (wsmax2*12 + 4 + 31) & ~31,
+         * then align32(wsmax2*4) for wsGroupNumber and wsmax2*4 for
+         * wsLoadStatus. wsmax2 < 256 keeps the multiply bounded; the
+         * footprint check below is the real gate. */
+        u32 ws_need = ((wsmax2 * 12u + 4u + 31u) & ~31u) +
                       ((wsmax2 * 4u + 31u) & ~31u) + wsmax2 * 4u;
         if (!(wslp >= kWsBase && wslp < kWsBase + 0x2000u) &&
             wsmax2 > 0u && wsmax2 < 256u && ws_need <= 0x2000u &&
@@ -1228,28 +1244,18 @@ static void rel_loader_write_journal(u32 offset, u32 size, void* user) {
             wslp >= 0x80000000u && wslp < 0x81800000u) {
             u32 cur = kWsBase;
             u32 j;
-            /* initOnCodeWs entries (12 bytes each) + per-entry name strings. */
-            for (j = 0; j < wsmax2 * 12u && iocws - 0x80000000u + j < s_ram_size &&
+            /* initOnCodeWs entries (12 bytes each) + the 4-byte zero
+             * sentinel transInitDataFile appended (var6/3*12+4). The
+             * guest loops bound themselves on initOnCodeWs[i].field_0x0
+             * being non-NULL, so the table copy must include the
+             * terminating word. field_0x0 keeps pointing at the WSYS
+             * blob inside the (still resident) aaf buffer — see the
+             * comment above for why it must NOT be repointed. */
+            for (j = 0; j < wsmax2 * 12u + 4u && iocws - 0x80000000u + j < s_ram_size &&
                         cur - 0x80000000u + j < s_ram_size; j++)
                 s_ram[cur - 0x80000000u + j] = s_ram[iocws - 0x80000000u + j];
-            for (j = 0; j < wsmax2; j++) {
-                u32 np = rel_rd32(cur + j * 12u);
-                if (np >= 0x80000000u && np < 0x81800000u) {
-                    u32 dst = cur + wsmax2 * 12u + j * 32u;
-                    u32 k;
-                    for (k = 0; k < 31u && np - 0x80000000u + k < s_ram_size &&
-                                dst - 0x80000000u + k < s_ram_size; k++) {
-                        s_ram[dst - 0x80000000u + k] = s_ram[np - 0x80000000u + k];
-                        if (s_ram[np - 0x80000000u + k] == 0u)
-                            break;
-                    }
-                    if (k == 31u)
-                        s_ram[dst - 0x80000000u + 31u] = 0u;
-                    rel_wr32(cur + j * 12u, dst);
-                }
-            }
             rel_wr32(0x803F7584u, cur);
-            cur += (wsmax2 * 12u + wsmax2 * 32u + 31u) & ~31u;
+            cur += (wsmax2 * 12u + 4u + 31u) & ~31u;
             for (j = 0; j < wsmax2 * 4u && wsgrp - 0x80000000u + j < s_ram_size &&
                         cur - 0x80000000u + j < s_ram_size; j++)
                 s_ram[cur - 0x80000000u + j] = s_ram[wsgrp - 0x80000000u + j];
@@ -1259,10 +1265,19 @@ static void rel_loader_write_journal(u32 offset, u32 size, void* user) {
                         cur - 0x80000000u + j < s_ram_size; j++)
                 s_ram[cur - 0x80000000u + j] = s_ram[wslp - 0x80000000u + j];
             rel_wr32(0x803F758Cu, cur);
-            fprintf(stderr,
-                    "[rel_loader] bankwave relocated iocws 0x%08X grp 0x%08X st "
-                    "0x%08X -> base 0x%08X (n=%u)\n",
-                    iocws, wsgrp, wslp, kWsBase, wsmax2);
+            {
+                /* Diagnostic: entry[0].field_0x0 must still point at the
+                 * real WSYS blob (nonzero archive/ctrl offsets) or the
+                 * parse below silently builds empty wave banks. */
+                u32 e0 = rel_rd32(kWsBase);
+                u32 ab = e0 >= 0x80000000u && e0 < 0x81800000u ? rel_rd32(e0 + 0x10u) : 0;
+                u32 cg = e0 >= 0x80000000u && e0 < 0x81800000u ? rel_rd32(e0 + 0x14u) : 0;
+                fprintf(stderr,
+                        "[rel_loader] bankwave relocated iocws 0x%08X grp 0x%08X st "
+                        "0x%08X -> base 0x%08X (n=%u) ws0=0x%08X archOff=0x%08X "
+                        "ctrlOff=0x%08X\n",
+                        iocws, wsgrp, wslp, kWsBase, wsmax2, e0, ab, cg);
+            }
         }
     }
 
