@@ -563,7 +563,9 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
         "${CMAKE_CURRENT_BINARY_DIR}/cutscene-skip-mod")
     add_subdirectory(mods/widescreen16x9
         "${CMAKE_CURRENT_BINARY_DIR}/widescreen16x9-mod")
-    add_dependencies(moderngekko-run mod cutscene_skip_mod widescreen16x9_mod)
+    add_subdirectory(mods/input-script
+        "${CMAKE_CURRENT_BINARY_DIR}/input-script-mod")
+    add_dependencies(moderngekko-run mod cutscene_skip_mod widescreen16x9_mod input_script_mod)
     add_custom_command(TARGET moderngekko-run POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Data/Sys"
@@ -576,7 +578,10 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
                 "$<TARGET_FILE_DIR:moderngekko-run>/Mods/cutscene-skip.mgm"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_CURRENT_BINARY_DIR}/widescreen16x9.mgm"
-                "$<TARGET_FILE_DIR:moderngekko-run>/Mods/widescreen16x9.mgm")
+                "$<TARGET_FILE_DIR:moderngekko-run>/Mods/widescreen16x9.mgm"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_BINARY_DIR}/input-script.mgm"
+                "$<TARGET_FILE_DIR:moderngekko-run>/Mods/input-script.mgm")
     if(MODERNGEKKO_DOL_PATCH_MANIFEST)
         add_custom_command(TARGET moderngekko-run POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory
@@ -980,6 +985,12 @@ if(BUILD_TESTING)
         "${CMAKE_CURRENT_SOURCE_DIR}/include")
     add_test(NAME moderngekko.widescreen16x9
              COMMAND moderngekko_widescreen16x9_test)
+
+    add_executable(moderngekko_input_script_test tests/input_script_test.c)
+    target_include_directories(moderngekko_input_script_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    add_test(NAME moderngekko.input_script
+             COMMAND moderngekko_input_script_test)
 
     add_executable(moderngekko_cpu_primitives_test
         tests/cpu_primitives_test.cpp
