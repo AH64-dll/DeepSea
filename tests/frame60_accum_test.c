@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "../mods/frame60-accum/mod.c"
 
@@ -177,6 +178,28 @@ static int check_view(const float* want12, const float* want16)
             return 0;
     return 1;
 }
+
+/* D5 shadow tests: write/read a pure-translation 3x4 Mtx at a guest addr —
+ * T(a)*T(b) = T(a+b) keeps concat/lerp expectations trivial. */
+static void put_tmtx(uint32_t addr, float tx, float ty, float tz)
+{
+    static const float row[12] = {1,0,0,0, 0,1,0,0, 0,0,1,0};
+    for (int i = 0; i < 12; ++i)
+        store_f32(&s_memory[addr - 0x80000000u + (uint32_t)i * 4u], row[i]);
+    store_f32(&s_memory[addr - 0x80000000u +  3u * 4u], tx);
+    store_f32(&s_memory[addr - 0x80000000u +  7u * 4u], ty);
+    store_f32(&s_memory[addr - 0x80000000u + 11u * 4u], tz);
+}
+static float get_mf(uint32_t addr, int r, int c)
+{
+    return be_f32(&s_memory[addr - 0x80000000u + (uint32_t)(r * 4 + c) * 4u]);
+}
+static int tfail(int code)
+{
+    fprintf(stderr, "[f60-test] FAIL code=%d\n", code);
+    return code;
+}
+
 
 /* ==== D-pairlock sim harness ===========================================
  * waitForTick semantics (JFWDisplay.cpp:347-356): the hook rewrites p1 at
@@ -2209,6 +2232,362 @@ int main(void)
             s_rframe_render = 0u; s_j3d_interp = 0u;
             f60_reset_runtime_state(&state);
         }
+    }
+
+    /* ================= D5 shadow-matrix interpolation =====================
+     * Fake dDlst_shadowControl_c (SHDC_SPAN bytes), j3dSys bake view at
+     * J3DSYS_VIEW_EA, draw-view arg (r4) at viewp. All matrices are pure
+     * translations: T(a)*T(b) = T(a+b), so stored = V_bake.t + W.t and the
+     * injected matrix = V_R.t + lerp(W_A, W_B).t. The draw hook drives the
+     * shared on_void_render_gate call-out (pc = SHD_CTRL_DRAW); set calls
+     * drive on_shd_setsimple directly (r3=ctrl, r4=pos ptr, mSimpleNum =
+     * slot the call is about to claim). */
+    {
+        const uint32_t ctrl  = 0x80200000u;
+        const uint32_t viewp = 0x80390000u;
+        const uint32_t posA  = 0x803A0000u, posB = 0x803A0100u;
+        const uint32_t posC  = 0x803A0200u, posS = 0x803A0300u;
+        const uint32_t e0 = ctrl + SHDC_SIMPLE_ARR;
+        const uint32_t e1 = ctrl + SHDC_SIMPLE_ARR + SHDS_SIZE;
+        const uint32_t r0 = ctrl + SHDC_REAL_ARR;
+        const uint32_t r1 = ctrl + SHDC_REAL_ARR + SHDR_SIZE;
+        const uint32_t r2 = ctrl + SHDC_REAL_ARR + 2u * SHDR_SIZE;
+        int i;
+        s_enabled = 1u; s_split_mode = 1u; s_shadow_interp = 1u;
+        s_rframe_render = 1u; s_j3d_interp = 1u;
+        s_r_dup = 0u; s_noinject = 0u; s_fol_cut = 0u;
+        s_shd_armed = 0u; s_shd_prev = 0u; s_shd_bake_ok = 0u;
+        s_shd_self = 0u; s_shd_snum = 0u;
+        memset(s_shd_id_live, 0, sizeof(s_shd_id_live));
+        memset(s_shd_sinj, 0, sizeof(s_shd_sinj));
+        memset(s_shd_rinj, 0, sizeof(s_shd_rinj));
+        memset(&s_memory[ctrl - 0x80000000u], 0, SHDC_SPAN);
+
+        /* build A: bake view T(100,0,0); two set calls claim slots 0/1 */
+        put_tmtx(J3DSYS_VIEW_EA, 100.0f, 0.0f, 0.0f);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 0u;
+        state.gpr[3] = ctrl; state.gpr[4] = posA;
+        on_shd_setsimple(&state);
+        if (s_shd_id_live[0] != posA || !s_shd_bake_ok) return tfail(500);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 1u;
+        state.gpr[4] = posB;
+        on_shd_setsimple(&state);
+        if (s_shd_id_live[1] != posB) return tfail(501);
+        /* entries as build A left them: stored = bake.t + W.t */
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 2u;
+        put_tmtx(e0 + SHDS_VOL, 100.0f, 10.0f, 0.0f);   /* W_A vol (0,10,0)  */
+        put_tmtx(e0 + SHDS_MTX, 100.0f, -20.0f, 0.0f);  /* W_A mtx (0,-20,0) */
+        put_tmtx(e1 + SHDS_VOL, 100.0f, 50.0f, 0.0f);   /* W_A vol (0,50,0)  */
+        put_tmtx(e1 + SHDS_MTX, 100.0f, 60.0f, 0.0f);
+        s_memory[e0 + SHDS_ALPHA - 0x80000000u] = 40u;
+        s_memory[e1 + SHDS_ALPHA - 0x80000000u] = 80u;
+
+        /* L draw entry: snapshot un-bakes to world space */
+        s_logic_this_frame = 1u;
+        state.pc = SHD_CTRL_DRAW; state.gpr[3] = ctrl;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        if (!s_shd_prev || s_shd_snum != 2u) return tfail(502);
+        if (s_shd_wvol[0].m[0][3] != 0.0f || s_shd_wvol[0].m[1][3] != 10.0f)
+            return tfail(503);                                   /* un-bake failed */
+        if (s_shd_id_snap[0] != posA || s_shd_id_snap[1] != posB)
+            return tfail(504);
+
+        /* build B: posB gone; entry0 still posA (moved +4), entry1 is new
+         * owner posC far away. Same bake view. */
+        put_tmtx(J3DSYS_VIEW_EA, 100.0f, 0.0f, 0.0f);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 0u;
+        state.gpr[4] = posA;
+        on_shd_setsimple(&state);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 1u;
+        state.gpr[4] = posC;
+        on_shd_setsimple(&state);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 2u;
+        put_tmtx(e0 + SHDS_VOL, 100.0f, 14.0f, 0.0f);   /* W_B vol (0,14,0)  */
+        put_tmtx(e0 + SHDS_MTX, 100.0f, -16.0f, 0.0f);  /* W_B mtx (0,-16,0) */
+        put_tmtx(e1 + SHDS_VOL, 300.0f, 50.0f, 0.0f);   /* W_B vol (200,50,0)*/
+        put_tmtx(e1 + SHDS_MTX, 300.0f, 70.0f, 0.0f);
+        s_memory[e0 + SHDS_ALPHA - 0x80000000u] = 48u;
+        s_memory[e1 + SHDS_ALPHA - 0x80000000u] = 70u;
+
+        /* R draw entry: V_R = T(-50,0,0) (r4 = viewp) */
+        s_logic_this_frame = 0u;
+        s_interp_alpha = 0.5f;
+        put_tmtx(viewp, -50.0f, 0.0f, 0.0f);
+        state.gpr[4] = viewp;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        if (!s_shd_armed || !s_shd_sinj[0] || !s_shd_sinj[1]) return tfail(505);
+        /* entry0 matched: inj = V_R x lerp(W_A,W_B) = (-50+0, 12, 0) */
+        if (get_mf(e0 + SHDS_VOL, 0, 3) != -50.0f ||
+            get_mf(e0 + SHDS_VOL, 1, 3) != 12.0f) return tfail(506);
+        if (get_mf(e0 + SHDS_MTX, 1, 3) != -18.0f) return tfail(507);
+        if (s_memory[e0 + SHDS_ALPHA - 0x80000000u] != 44u) return tfail(508);
+        /* entry1 unmatched: camera re-bake only -> V_R x W_live = (150,50,0) */
+        if (get_mf(e1 + SHDS_VOL, 0, 3) != 150.0f ||
+            get_mf(e1 + SHDS_VOL, 1, 3) != 50.0f) return tfail(509);
+        if (s_memory[e1 + SHDS_ALPHA - 0x80000000u] != 70u) return tfail(510);
+
+        /* return hook restores live (build-B) values exactly */
+        on_shd_draw_return(&state);
+        if (s_shd_armed) return tfail(511);
+        if (get_mf(e0 + SHDS_VOL, 0, 3) != 100.0f ||
+            get_mf(e0 + SHDS_VOL, 1, 3) != 14.0f) return tfail(512);
+        if (s_memory[e0 + SHDS_ALPHA - 0x80000000u] != 48u) return tfail(513);
+        if (get_mf(e1 + SHDS_VOL, 0, 3) != 300.0f) return tfail(514);
+
+        /* --- bake view differs between builds (camera moved +6) --- */
+        put_tmtx(J3DSYS_VIEW_EA, 100.0f, 0.0f, 0.0f);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 0u;
+        state.gpr[4] = posA;
+        on_shd_setsimple(&state);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 1u;
+        put_tmtx(e0 + SHDS_VOL, 100.0f, 10.0f, 0.0f);   /* W_A (0,10,0) */
+        put_tmtx(e0 + SHDS_MTX, 100.0f, -20.0f, 0.0f);
+        s_memory[e0 + SHDS_ALPHA - 0x80000000u] = 40u;
+        s_logic_this_frame = 1u;
+        state.gpr[3] = ctrl;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        if (s_shd_wvol[0].m[0][3] != 0.0f) return tfail(515);
+        /* build B baked under T(106,0,0): stored = 106 + W.t */
+        put_tmtx(J3DSYS_VIEW_EA, 106.0f, 0.0f, 0.0f);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 0u;
+        state.gpr[4] = posA;
+        on_shd_setsimple(&state);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 1u;
+        put_tmtx(e0 + SHDS_VOL, 106.0f, 13.0f, 0.0f);   /* W_B (0,13,0) */
+        put_tmtx(e0 + SHDS_MTX, 106.0f, -19.0f, 0.0f);
+        s_memory[e0 + SHDS_ALPHA - 0x80000000u] = 48u;
+        s_logic_this_frame = 0u;
+        put_tmtx(viewp, 103.0f, 0.0f, 0.0f);            /* lerped view */
+        state.gpr[4] = viewp;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        /* un-baked endpoints 10/13 -> mid 11.5; rebake adds 103 */
+        if (get_mf(e0 + SHDS_VOL, 0, 3) != 103.0f ||
+            get_mf(e0 + SHDS_VOL, 1, 3) != 11.5f) return tfail(516);
+        on_shd_draw_return(&state);
+
+        /* --- slot reuse: posB survives but shifts to slot 0 --- */
+        put_tmtx(J3DSYS_VIEW_EA, 100.0f, 0.0f, 0.0f);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 0u;
+        state.gpr[4] = posA;
+        on_shd_setsimple(&state);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 1u;
+        state.gpr[4] = posB;
+        on_shd_setsimple(&state);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 2u;
+        put_tmtx(e0 + SHDS_VOL, 100.0f, 10.0f, 0.0f);   /* posA W (0,10,0) */
+        put_tmtx(e0 + SHDS_MTX, 100.0f, -20.0f, 0.0f);
+        put_tmtx(e1 + SHDS_VOL, 100.0f, 50.0f, 0.0f);   /* posB W (0,50,0) */
+        put_tmtx(e1 + SHDS_MTX, 100.0f, 60.0f, 0.0f);
+        s_memory[e0 + SHDS_ALPHA - 0x80000000u] = 40u;
+        s_memory[e1 + SHDS_ALPHA - 0x80000000u] = 80u;
+        s_logic_this_frame = 1u;
+        state.gpr[3] = ctrl;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        /* build B: only posB, now slot 0 */
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 0u;
+        state.gpr[4] = posB;
+        on_shd_setsimple(&state);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 1u;
+        put_tmtx(e0 + SHDS_VOL, 100.0f, 54.0f, 0.0f);   /* posB W (0,54,0) */
+        put_tmtx(e0 + SHDS_MTX, 100.0f, 64.0f, 0.0f);
+        s_memory[e0 + SHDS_ALPHA - 0x80000000u] = 88u;
+        s_logic_this_frame = 0u;
+        put_tmtx(viewp, -50.0f, 0.0f, 0.0f);
+        state.gpr[4] = viewp;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        /* matches snap slot 1 by ptr, not slot 0: mid y = 52, alpha 84 */
+        if (get_mf(e0 + SHDS_VOL, 0, 3) != -50.0f ||
+            get_mf(e0 + SHDS_VOL, 1, 3) != 52.0f) return tfail(517);
+        if (s_memory[e0 + SHDS_ALPHA - 0x80000000u] != 84u) return tfail(518);
+        on_shd_draw_return(&state);
+
+        /* --- same-ptr collision: distance guard rejects the lerp --- */
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 0u;
+        state.gpr[4] = posS;
+        on_shd_setsimple(&state);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 1u;
+        put_tmtx(e0 + SHDS_VOL, 100.0f, 10.0f, 0.0f);   /* W (0,10,0) */
+        put_tmtx(e0 + SHDS_MTX, 100.0f, -20.0f, 0.0f);
+        s_memory[e0 + SHDS_ALPHA - 0x80000000u] = 40u;
+        s_logic_this_frame = 1u;
+        state.gpr[3] = ctrl;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        /* build B: same ptr, teleported owner -> no midpoint */
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 0u;
+        state.gpr[4] = posS;
+        on_shd_setsimple(&state);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 1u;
+        put_tmtx(e0 + SHDS_VOL, 600.0f, 10.0f, 0.0f);   /* W (500,10,0) */
+        put_tmtx(e0 + SHDS_MTX, 600.0f, -20.0f, 0.0f);
+        s_logic_this_frame = 0u;
+        put_tmtx(viewp, -50.0f, 0.0f, 0.0f);
+        state.gpr[4] = viewp;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        /* camera re-bake only: 500-50=450 — a lerp would land at 205 */
+        if (get_mf(e0 + SHDS_VOL, 0, 3) != 450.0f ||
+            get_mf(e0 + SHDS_VOL, 1, 3) != 10.0f) return tfail(519);
+        on_shd_draw_return(&state);
+
+        /* --- same-ptr pair disambiguation: nearest translation wins ---
+         * Build A: two owners share the stack ptr P at W.y=10 and W.y=60.
+         * Build B: they emit in REVERSED order at 14 and 64 — nearest-match
+         * must pair entry0<->A(60) and entry1<->A(10); first-fit would
+         * cross-pair (entry0<->A(10): mid 37 instead of 62). */
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 0u;
+        state.gpr[4] = posS;
+        on_shd_setsimple(&state);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 1u;
+        state.gpr[4] = posS;
+        on_shd_setsimple(&state);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 2u;
+        put_tmtx(e0 + SHDS_VOL, 100.0f, 10.0f, 0.0f);   /* owner1 W (0,10,0) */
+        put_tmtx(e0 + SHDS_MTX, 100.0f, -20.0f, 0.0f);
+        put_tmtx(e1 + SHDS_VOL, 100.0f, 60.0f, 0.0f);   /* owner2 W (0,60,0) */
+        put_tmtx(e1 + SHDS_MTX, 100.0f, 70.0f, 0.0f);
+        s_memory[e0 + SHDS_ALPHA - 0x80000000u] = 40u;
+        s_memory[e1 + SHDS_ALPHA - 0x80000000u] = 80u;
+        s_logic_this_frame = 1u;
+        state.gpr[3] = ctrl;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 0u;
+        state.gpr[4] = posS;
+        on_shd_setsimple(&state);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 1u;
+        state.gpr[4] = posS;
+        on_shd_setsimple(&state);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 2u;
+        put_tmtx(e0 + SHDS_VOL, 100.0f, 64.0f, 0.0f);   /* owner2 first now */
+        put_tmtx(e0 + SHDS_MTX, 100.0f, 74.0f, 0.0f);
+        put_tmtx(e1 + SHDS_VOL, 100.0f, 14.0f, 0.0f);   /* owner1 second    */
+        put_tmtx(e1 + SHDS_MTX, 100.0f, -16.0f, 0.0f);
+        s_logic_this_frame = 0u;
+        put_tmtx(viewp, -50.0f, 0.0f, 0.0f);
+        state.gpr[4] = viewp;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        /* entry0 pairs with A(60): mid y = 62; entry1 with A(10): mid 12 */
+        if (get_mf(e0 + SHDS_VOL, 1, 3) != 62.0f) return tfail(537);
+        if (get_mf(e1 + SHDS_VOL, 1, 3) != 12.0f) return tfail(538);
+        on_shd_draw_return(&state);
+
+        /* --- real shadows --- */
+        put_tmtx(J3DSYS_VIEW_EA, 100.0f, 0.0f, 0.0f);
+        s_memory[r0 + SHDR_STATE - 0x80000000u] = 1u;
+        s_memory[r0 + SHDR_ALPHA - 0x80000000u] = 96u;
+        store_be32(&s_memory[r0 + SHDR_KEY - 0x80000000u], 7u);
+        store_be32(&s_memory[r0 + SHDR_MODEL0 - 0x80000000u], 0x80440000u);
+        put_tmtx(r0 + SHDR_VIEW, 0.0f, 0.0f, -100.0f);
+        put_tmtx(r0 + SHDR_RECV, 5.0f, 0.0f, 0.0f);
+        for (i = 0; i < 16; ++i)
+            store_f32(&s_memory[r0 + SHDR_PROJ - 0x80000000u + (uint32_t)i * 4u],
+                      4.0f + (float)i);
+        /* r1: same slot, different owner next tick (key changes) */
+        s_memory[r1 + SHDR_STATE - 0x80000000u] = 1u;
+        s_memory[r1 + SHDR_ALPHA - 0x80000000u] = 30u;
+        store_be32(&s_memory[r1 + SHDR_KEY - 0x80000000u], 9u);
+        store_be32(&s_memory[r1 + SHDR_MODEL0 - 0x80000000u], 0x80440100u);
+        put_tmtx(r1 + SHDR_VIEW, 1.0f, 2.0f, 3.0f);
+        put_tmtx(r1 + SHDR_RECV, 9.0f, 0.0f, 0.0f);
+        /* r2: state 0 -> never touched */
+        s_memory[r2 + SHDR_STATE - 0x80000000u] = 0u;
+        s_logic_this_frame = 1u;
+        state.gpr[3] = ctrl;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        if (!s_shd_prev || !s_shd_rprev[0].used || s_shd_rprev[0].key != 7u)
+            return tfail(520);
+        /* build B: r0 same owner moved; r1 claimed by key 11 */
+        s_memory[r0 + SHDR_ALPHA - 0x80000000u] = 80u;
+        put_tmtx(r0 + SHDR_VIEW, 0.0f, 0.0f, -108.0f);
+        put_tmtx(r0 + SHDR_RECV, 7.0f, 0.0f, 0.0f);
+        for (i = 0; i < 16; ++i)
+            store_f32(&s_memory[r0 + SHDR_PROJ - 0x80000000u + (uint32_t)i * 4u],
+                      8.0f + (float)i);
+        store_be32(&s_memory[r1 + SHDR_KEY - 0x80000000u], 11u);
+        put_tmtx(r1 + SHDR_VIEW, 4.0f, 5.0f, 6.0f);
+        s_logic_this_frame = 0u;
+        put_tmtx(viewp, -50.0f, 0.0f, 0.0f);
+        state.gpr[4] = viewp;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        /* r0 matched: view z -104, recv x 6, proj elems 6+i, alpha 88 */
+        if (get_mf(r0 + SHDR_VIEW, 2, 3) != -104.0f) return tfail(521);
+        if (get_mf(r0 + SHDR_RECV, 0, 3) != 6.0f) return tfail(522);
+        if (get_mf(r0 + SHDR_PROJ, 0, 0) != 6.0f ||
+            get_mf(r0 + SHDR_PROJ, 3, 3) != 21.0f) return tfail(523);
+        if (s_memory[r0 + SHDR_ALPHA - 0x80000000u] != 88u) return tfail(524);
+        if (!s_shd_rinj[0]) return tfail(525);
+        /* r1 key changed -> live view untouched */
+        if (get_mf(r1 + SHDR_VIEW, 0, 3) != 4.0f) return tfail(526);
+        if (s_shd_rinj[1]) return tfail(527);
+        on_shd_draw_return(&state);
+        if (get_mf(r0 + SHDR_VIEW, 2, 3) != -108.0f) return tfail(528);
+        if (s_memory[r0 + SHDR_ALPHA - 0x80000000u] != 80u) return tfail(529);
+
+        /* --- gates: kill switch, camera cut, alpha edges, dup --- */
+        put_tmtx(J3DSYS_VIEW_EA, 100.0f, 0.0f, 0.0f);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 0u;
+        state.gpr[4] = posA;
+        on_shd_setsimple(&state);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 1u;
+        put_tmtx(e0 + SHDS_VOL, 100.0f, 10.0f, 0.0f);
+        put_tmtx(e0 + SHDS_MTX, 100.0f, -20.0f, 0.0f);
+        s_logic_this_frame = 1u;
+        state.gpr[3] = ctrl;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        put_tmtx(e0 + SHDS_VOL, 100.0f, 14.0f, 0.0f);
+        put_tmtx(e0 + SHDS_MTX, 100.0f, -16.0f, 0.0f);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 0u;
+        state.gpr[4] = posA;
+        on_shd_setsimple(&state);
+        s_memory[ctrl + SHDC_SIMPLE_NUM - 0x80000000u] = 1u;
+        s_logic_this_frame = 0u;
+        put_tmtx(viewp, -50.0f, 0.0f, 0.0f);
+        state.gpr[4] = viewp;
+        /* kill switch off: entry hook does nothing, live values stay */
+        s_shadow_interp = 0u;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        if (get_mf(e0 + SHDS_VOL, 0, 3) != 100.0f || s_shd_armed) return tfail(530);
+        s_shadow_interp = 1u;
+        /* camera cut: plain repaint */
+        s_fol_cut = 1u;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        if (get_mf(e0 + SHDS_VOL, 0, 3) != 100.0f || s_shd_armed) return tfail(531);
+        s_fol_cut = 0u;
+        /* dup frame: gated off */
+        s_r_dup = 1u;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        if (get_mf(e0 + SHDS_VOL, 0, 3) != 100.0f || s_shd_armed) return tfail(532);
+        s_r_dup = 0u;
+        /* alpha edge 0: no inject */
+        s_interp_alpha = 0.0f;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        if (get_mf(e0 + SHDS_VOL, 0, 3) != 100.0f || s_shd_armed) return tfail(533);
+        /* alpha 0.5 back: inject works again */
+        s_interp_alpha = 0.5f;
+        state.pc = SHD_CTRL_DRAW;
+        on_void_render_gate(&state);
+        if (get_mf(e0 + SHDS_VOL, 1, 3) != 12.0f || !s_shd_armed) return tfail(534);
+        on_shd_draw_return(&state);
+        if (get_mf(e0 + SHDS_VOL, 0, 3) != 100.0f) return tfail(535);
+
+        s_logic_this_frame = 1u;
+        f60_reset_runtime_state(&state);
+        if (s_shd_prev || s_shd_armed) return tfail(536);
     }
 
     return 0;
