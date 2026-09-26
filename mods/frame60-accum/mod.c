@@ -195,6 +195,7 @@ static uint32_t s_sea_fix = 1;        /* MODERNGEKKO_F60_SEA_FIX — sea anim co
 static uint32_t s_light_fix = 1;      /* MODERNGEKKO_F60_LIGHT_FIX — R-frame relight under lerped view  */
 static uint32_t s_foliage_fix = 1;    /* MODERNGEKKO_F60_FOLIAGE_FIX — grass/flower/tree mtx lerp        */
 static uint32_t s_jpa_fix = 1;        /* MODERNGEKKO_F60_JPA_FIX — particle mGlobalPosition lerp        */
+static uint32_t s_cloth_interp = 1;   /* MODERNGEKKO_F60_CLOTH_INTERP — CPU-cloth vertex lerp           */
 static uint32_t s_fadelog = 0;        /* MODERNGEKKO_F60_FADELOG — fade-state forensics           */
 static uint32_t s_rnglog = 0;         /* MODERNGEKKO_F60_RNGLOG — cM_rnd state per L-frame        */
 static uint32_t s_rng_lcount = 0;     /* L-frames logged by RNGLOG (capped at 400)                */
@@ -382,6 +383,8 @@ static void frame60_accum_on_load(const ModernGekkoModHostApi* api)
         if (fol) s_foliage_fix = (fol[0] != '0');
         const char* jp = getenv("MODERNGEKKO_F60_JPA_FIX");
         if (jp) s_jpa_fix = (jp[0] != '0');
+        const char* co = getenv("MODERNGEKKO_F60_CLOTH_INTERP");
+        if (co) s_cloth_interp = (co[0] != '0');
         const char* fe = getenv("MODERNGEKKO_F60_FORCE_ELSE");
         if (fe && fe[0] == '1')
             s_force_else = 1;
@@ -448,6 +451,8 @@ static void camview_install(CPUState* state, float alpha);
 static void camview_restore(CPUState* state, uint32_t view);
 static void jpa_lframe(CPUState* state);
 static void jpa_rframe(CPUState* state, float alpha);
+static void cloth_painter_entry(CPUState* state);
+static void cloth_rframe(CPUState* state, float alpha);
 static void f60_reset_runtime_state(CPUState* state);
 static void vilog_note_eye(CPUState* state);
 static void fifo_probe(CPUState* st);
@@ -479,6 +484,7 @@ static uint64_t s_dbg_caminj;         /* camera view/proj mid-view installs */
 static uint64_t s_dbg_lightgate;      /* dKy_setLight R-frame intercepts (skip or relight) */
 static uint64_t s_dbg_folinj;         /* foliage element matrices lerped on R-frames        */
 static uint64_t s_dbg_jpainj;         /* JPA particle positions lerped on R-frames          */
+static uint64_t s_cloth_dbg_lerp, s_cloth_dbg_skip; /* cloth packets lerped / warp-skipped */
 static uint32_t s_hist_used;
 static uint32_t s_matrices_injected = 0; /* live guest arrays currently hold our lerp */
 
@@ -732,7 +738,7 @@ static void frame60_accum_decide(CPUState* state, uint32_t* disp_out)
                     for (uint32_t ei = 0; ei < n; ++ei)
                         if (rd32_fast(state, buf + ei * 4u)) ++pk[bi];
                 }
-                fprintf(stderr, "[f60] jf=%llu jm=%llu prg=%llu ovrR=%llu w0d=%llu capd=%llu gpd=%llu cut=%llu camI=%llu lg=%llu wnum=%u pd=%u rd=%u rc=%u xm=%u xi=%d,%d,%d lst=%u,%u,%u,%u cam=%08X pk=%08X,%08X,%08X pb=%u fb=%u fol=%llu jpa=%llu\n",
+                fprintf(stderr, "[f60] jf=%llu jm=%llu prg=%llu ovrR=%llu w0d=%llu capd=%llu gpd=%llu cut=%llu camI=%llu lg=%llu wnum=%u pd=%u rd=%u rc=%u xm=%u xi=%d,%d,%d lst=%u,%u,%u,%u cam=%08X pk=%08X,%08X,%08X pb=%u fb=%u fol=%llu jpa=%llu cl=%llu,%llu\n",
                     (unsigned long long)s_dbg_jfast,
                     (unsigned long long)s_dbg_jmiss,
                     (unsigned long long)s_dbg_purged,
@@ -757,7 +763,9 @@ static void frame60_accum_decide(CPUState* state, uint32_t* disp_out)
                     (unsigned)pk[0], (unsigned)pk[1], (unsigned)pk[2],
                     (unsigned)s_painter_bytes, (unsigned)s_fcdw_bytes,
                     (unsigned long long)s_dbg_folinj,
-                    (unsigned long long)s_dbg_jpainj);
+                    (unsigned long long)s_dbg_jpainj,
+                    (unsigned long long)s_cloth_dbg_lerp,
+                    (unsigned long long)s_cloth_dbg_skip);
             }
         }
         /* The probe walks the fifo backward one word per external read —
@@ -1752,6 +1760,13 @@ static void on_painter_skip(CPUState* state)
         memcpy(s_vl_view_img, s_vl_view_rend, sizeof(s_vl_view_img));
     frame60_accum_decide(state, 0);
     s_r_dup = 0;
+    /* Cloth index-flip restore + sail snapshot must run before ANY Painter
+     * body below: an R-frame's flipped mCurArr/m1C3A has to be back at its
+     * real value before this iteration's execute samples the "old" buffer
+     * (Painter runs before execute inside fpcM_Management), and the DOL
+     * draw-hook arm is a leak-safety net. Cheap: zero work unless a flip is
+     * outstanding or an L-frame sail packet exists. */
+    cloth_painter_entry(state);
     if (s_auto_degrade && s_enabled && s_split_mode && s_logic_this_frame &&
         s_rframe_render && s_j3d_interp)
         gov_on_lframe(&s_gov, state->timebase, host_now_ns());
@@ -1927,6 +1942,11 @@ static void on_painter_skip(CPUState* state)
          * noinject probe like every other inject. */
         if (s_jpa_fix && !s_noinject)
             jpa_rframe(state, s_interp_alpha);
+        /* Cloth/sail/flag packets: rel-side interpolation (OPA/XLU drawbuf
+         * walk — flips restored at next Painter entry). DOL-side cloth is
+         * handled inside Painter by the dCloth_packet_c::draw hooks. */
+        if (s_cloth_interp && !s_noinject)
+            cloth_rframe(state, s_interp_alpha);
         /* Present-path fix: at 60Hz the R-frame's beginRender always finds
          * drawn != displaying (the L-frame's XFB has not been consumed by VI
          * yet), so exchangeXfb_double takes its else-branch — clearEfb wipes
@@ -4431,6 +4451,561 @@ static void jpa_rframe(CPUState* st, float alpha)
     jpa_walk(st, 1, alpha);
 }
 
+/* ========== Wave2 cloth: CPU-simulated cloth/sail vertex interpolation ======
+ * (MODERNGEKKO_F60_CLOTH_INTERP, default ON; =0 restores retail output
+ * exactly — no hooks registered, no writes.)
+ *
+ * Target: cloth vertex arrays are re-simulated inside fpcM_Execute at 30 Hz,
+ * so an R-frame repaint re-issues the same vertices — sails/flags step at
+ * 30 Hz while everything interpolated moves at 60 Hz.
+ *
+ * Every cloth packet in TWW is a double-buffered J3DPacket variant: the sim
+ * samples the CURRENT buffer's pointers ("old"), flips an index byte, then
+ * writes the NEW pose into the other buffer (e.g. dCloth_packet_c::cloth_move,
+ * d_cloth_packet.cpp:135-153 — pPosOld is read before changeCurrentBuff()).
+ * So after the L-tick's execute, the stale (index^1) buffer still holds the
+ * exact pose the L Painter drew — the perfect lerp prev endpoint, already in
+ * guest memory. The R-frame path lerps it IN PLACE toward the current buffer
+ * and flips the index, so draw() publishes interpolated arrays. Next L-tick's
+ * sim writes into that buffer wholesale before ever reading it — simulation
+ * state is never corrupted, and the lerped array stays stable across the
+ * async-GPU consume window (no patch-then-restore of pointer-referenced
+ * memory within a frame; COMMON.md rule 8 satisfied by construction).
+ *
+ * Two mechanisms:
+ *  (A) DOL cloth: hook draw__15dCloth_packet_c (0x80063728 — the single
+ *      non-virtual draw() covering every subclass, incl. packets entered
+ *      into the zsort-XLU list by cloth_draw__18dCloth_packetXlu_cFv).
+ *      Entry: lerp stale-buffer arrays + flip mCurArr (+0xF8). Return:
+ *      restore mCurArr. A per-Painter de-dup list covers packets drawn
+ *      twice in one Painter (multi-window) so the stale buffer is lerped
+ *      once but drawn correctly each time.
+ *  (B) REL cloth packets (sail/goal flag/majuu flag/pirate flag/buoy flag):
+ *      rel code is OSLink'd to dynamic guest addresses — cannot be hooked.
+ *      Instead a Painter-entry walk scans the dDlst_list_c J3DDrawBuffer
+ *      members (mpOpaList/mpXluList/... — every cloth packet entryImm()'d
+ *      itself into one during the last fpcDw) and classifies each packet
+ *      by vtable:
+ *      DynamicModuleControlBase::mFirst -> module name -> OSModuleHeader ->
+ *      sectionInfo[5] (.data) base + a baked vtable offset. Matched packets
+ *      get the same lerp-into-stale + index flip at Painter ENTRY; the index
+ *      is restored at the NEXT Painter entry (before the next execute can
+ *      read it) via the s_cloth_flips list.
+ *
+ * Special cases:
+ *  - daSail_packet_c is SINGLE-buffered: m1C3A is written 0 at init and
+ *    sail_move rewrites mPos[0] wholesale each tick; slots [1] are dead
+ *    pairs we borrow: at each L-entry the walk copies slot0 -> slot1
+ *    (prev endpoint), at R the lerp lands in slot1 and m1C3A is set to 1.
+ *  - daGFlag_packet_c draws the DERIVED mDPos array (not sim mPos) — the
+ *    lerp touches only the three drawn arrays (mDPos/mNrm/mBackNrm).
+ *  - Vertex count per packet kind is fixed; every access is in_ram-gated;
+ *    a per-vertex displacement check (> CLOTH_WARP_D2) skips lerp on
+ *    teleports, sail hoist/lower snaps and other discontinuities.
+ *  - Camera cuts (s_fol_cut set by the cam-view path) and s_noinject make
+ *    the R-frame a plain repaint: no lerp, no flips.                         */
+
+/* dDlst_list_c inside g_dComIfG_gameInfo (0x803C4C08) at +0x5D1C owns the
+ * real J3DDrawBuffer* members (mpOpaListSky @+0x00 .. mpOpaList2D @+0x38).
+ * j3dSys.mDrawBuffer[] is NOT walkable here — it aliases whichever list the
+ * last set*DrawList installed during fpcDw. Cloth packets enter via
+ * j3dSys.getDrawBuffer(0)->entryImm(pkt,0), landing in the window list that
+ * was active in their actor's _draw — almost always mpOpaList or mpXluList,
+ * but sky/BG/P1 windows can host flag-type packets too, so scan all 15
+ * buffer slots; a packet lives in exactly one list's chains. */
+#define DDLST_EA           (0x803C4C08u + 0x5D1Cu)
+#define DDLST_NBUFS        15u          /* member buf ptrs +0x00..+0x38       */
+#define J3DDB_OFF_BUF      0x00u        /* J3DDrawBuffer::mpBuf                 */
+#define J3DDB_OFF_BUFSZ    0x04u        /* J3DDrawBuffer::mBufSize              */
+#define J3DDB_MAX_SLOTS    1024u        /* sanity cap on the entry table        */
+
+#define DMC_FIRST_EA       0x803F7308u  /* DynamicModuleControlBase::mFirst     */
+#define DMC_OFF_LINKCNT    0x00u        /* u16 mLinkCount (isLinked)            */
+#define DMC_OFF_NEXT       0x08u        /* mNext                                */
+#define DMC_OFF_MODULE     0x10u        /* OSModuleHeader* mModule              */
+#define DMC_OFF_NAME       0x1Cu        /* const char* mName ("d_a_sail" ...)   */
+#define DMC_WALK_CAP       128u
+#define OSM_OFF_SECTBL     0x10u        /* OSModuleInfo::sectionInfoOffset — at
+                                        * runtime an absolute OSSectionInfo*  */
+#define CLOTH_SEC_DATA     5u           /* .data section index (TWW rels are
+                                        * uniform: 1=.text 2=.ctors 3=.dtors
+                                        * 4=.rodata 5=.data 6=.bss — verified
+                                        * against d_a_sail.rel/d_a_goal_flag  */
+
+#define CLOTH_MAX_VERTS    1024u        /* hard cap: sanity for DOL n=w*h       */
+#define CLOTH_CHUNK        32u          /* verts per stack-buffer pass          */
+#define CLOTH_MAX_FLIPS    32u          /* tracked rel index flips per R frame  */
+#define CLOTH_SEEN_MAX     32u          /* DOL per-Painter lerp de-dup          */
+/* Teleport/warp guard: if any vertex moved more than this (squared units —
+ * a sail whip is a few units/tick, a warp is hundreds) between the two
+ * endpoints, the pair is not adjacent-tick-continuous -> plain repaint. */
+#define CLOTH_WARP_D2      (50.0f * 50.0f)
+
+#define CLOTH_SPEC_SAIL    0x01u        /* single-buffered (dead slot1 = prev) */
+
+typedef struct {
+    const char* rel;        /* DynamicModuleControl mName match               */
+    uint32_t    vtab_off;   /* packet vtable offset inside .data              */
+    uint32_t    n;          /* vertex count per array                         */
+    uint32_t    idx_off;    /* current-buffer index field offset              */
+    uint8_t     idx_s32;    /* 1 => s32 index, 0 => u8                        */
+    uint8_t     flags;
+    uint32_t    pos_off;    /* drawn pos array, slot s at off + s*stride      */
+    uint32_t    nrm_off;    /* front normals                                  */
+    uint32_t    bck_off;    /* back normals                                   */
+    uint32_t    stride;     /* slot stride in bytes                           */
+    uint32_t    span;       /* packet bytes probed (in_ram gate)              */
+} ClothSpec;
+
+static const ClothSpec s_cloth_specs[] = {
+    /* daSail_packet_c (d_a_sail.rel) — the pirate ship's sail.
+     * vtab __vt__15daSail_packet_c @ .data+0x1434; draw mPos/mNrm/mBackNrm
+     * [m1C3A], 84 verts (12x7); m1C3A u8 @+0x1C3A pinned 0. */
+    { "d_a_sail",        0x1434u,  84u, 0x1C3Au, 0, CLOTH_SPEC_SAIL,
+      0x00A4u, 0x0C74u, 0x1454u, 84u * 12u, 0x1C40u },
+    /* daGFlag_packet_c (d_a_goal_flag.rel) — goal flags.
+     * vtab @ .data+0x25F0; drawn arrays mDPos/mNrm/mBackNrm[mCurrArr],
+     * 45 verts (9x5); mCurrArr u8 @+0x1384. Sim-only mPos/mVelocity
+     * untouched. */
+    { "d_a_goal_flag",   0x25F0u,  45u, 0x1384u, 0, 0,
+      0x04C0u, 0x08F8u, 0x0D30u, 45u * 12u, 0x1388u },
+    /* daMajuu_Flag_packet_c (d_a_majuu_flag.rel) — dragon roost banners.
+     * vtab @ .data+0x0F68; mpPosArr/mpNrmArr/mpNrmArrBack[mCurArr],
+     * 21 verts (7x3); mCurArr u8 @+0x79A. */
+    { "d_a_majuu_flag",  0x0F68u,  21u, 0x079Au, 0, 0,
+      0x00A0u, 0x02A0u, 0x04A0u, 21u * 12u, 0x079Cu },
+    /* daPirate_Flag_packet_c (d_a_pirate_flag.rel) — small pirate flags.
+     * vtab @ .data+0x0384; mPos/mNrm/mBackNrm[m87E], 25 verts (5x5);
+     * m87E u8 @+0x87E. */
+    { "d_a_pirate_flag", 0x0384u,  25u, 0x087Eu, 0, 0,
+      0x0044u, 0x029Cu, 0x04F4u, 25u * 12u, 0x0880u },
+    /* daObjBuoyflag::Packet_c (d_a_obj_buoyflag.rel) — buoy flags, common
+     * while sailing. vtab @ .data+0x1B40; mDrawVtx[2] slots {pos[35]@0,
+     * nrm[35]@+0x1A4, nrm2(back)[35]@+0x348}; mB8C s32 @+0xB8C. */
+    { "d_a_obj_buoyflag",0x1B40u,  35u, 0x0B8Cu, 1, 0,
+      0x0010u, 0x01B4u, 0x0358u, 0x04ECu, 0x0B90u },
+};
+#define CLOTH_NSPEC ((uint32_t)(sizeof(s_cloth_specs) / sizeof(s_cloth_specs[0])))
+
+/* dCloth_packet_c::draw hook target (DOL; covers all subclasses). */
+#define DCLOTH_DRAW_EA     0x80063728u
+#define DCLOTH_OFF_FLY     0x10u        /* mFlyGridSize                       */
+#define DCLOTH_OFF_HOIST   0x14u        /* mHoistGridSize                     */
+#define DCLOTH_OFF_POS     0x28u        /* cXyz* mpPosArr[2]                  */
+#define DCLOTH_OFF_NRM     0x30u        /* cXyz* mpNrmArr[2]                  */
+#define DCLOTH_OFF_BCK     0x38u        /* cXyz* mpNrmArrBack[2]              */
+#define DCLOTH_OFF_CUR     0xF8u        /* u8 mCurArr                         */
+#define DCLOTH_SPAN        0xFCu        /* object probe span                  */
+
+/* Rel flip bookkeeping: one entry per packet whose index byte was flipped
+ * at the last R-frame Painter entry — restored at the next entry. */
+typedef struct {
+    uint32_t pkt;
+    uint32_t orig;
+    uint8_t  spec;
+} ClothFlip;
+static ClothFlip s_cloth_flips[CLOTH_MAX_FLIPS];
+static uint32_t  s_cloth_nflips = 0;
+/* DOL draw-hook arm state (entry flips, return restores). */
+static uint32_t  s_cloth_dol_armed = 0;
+static uint32_t  s_cloth_dol_self = 0;
+static uint8_t   s_cloth_dol_orig = 0;
+/* Packets already lerped this Painter pass (multi-window de-dup). */
+static uint32_t  s_cloth_seen[CLOTH_SEEN_MAX];
+static uint32_t  s_cloth_seen_n = 0;
+
+static int cloth_str_eq(CPUState* st, uint32_t ea, const char* lit)
+{
+    /* Guest C-string vs literal, byte-wise, bounded + in_ram-gated. */
+    uint32_t i;
+    for (i = 0; i < 24u; ++i) {
+        if (!in_ram(st, ea + i, 1u)) return 0;
+        const uint8_t g = (uint8_t)rd8_fast(st, ea + i);
+        const uint8_t l = (uint8_t)lit[i];
+        if (g != l) return 0;
+        if (g == 0u) return 1;
+    }
+    return 0;
+}
+
+/* Resolve every spec's .data runtime base in ONE walk of the
+ * DynamicModuleControlBase list. bases[] zeroed by caller. A base is set
+ * only when the module is linked (mLinkCount != 0, mModule != 0) and the
+ * section table is readable — stale bases never survive a module unload. */
+static void cloth_resolve_bases(CPUState* st, uint32_t* bases, uint32_t nb)
+{
+    uint32_t node = rd32_fast(st, DMC_FIRST_EA);
+    uint32_t found = 0;
+    uint32_t it;
+    for (it = 0; node && it < DMC_WALK_CAP && found < nb; ++it) {
+        uint32_t mod, nm, i;
+        if (!in_ram(st, node, 0x20u)) return;
+        mod = rd32_fast(st, node + DMC_OFF_MODULE);
+        nm  = rd32_fast(st, node + DMC_OFF_NAME);
+        /* Linked modules only: mLinkCount != 0 keeps a mounted-but-unlinked
+         * module (mid scene swap) from handing out a stale base. */
+        if (!mod || !nm || rd16_fast(st, node + DMC_OFF_LINKCNT) == 0u) {
+            node = rd32_fast(st, node + DMC_OFF_NEXT);
+            continue;
+        }
+        for (i = 0; i < nb; ++i) {
+            if (bases[i] || !cloth_str_eq(st, nm, s_cloth_specs[i].rel))
+                continue;
+            const uint32_t tbl = in_ram(st, mod, 0x14u)
+                ? rd32_fast(st, mod + OSM_OFF_SECTBL) : 0u;
+            if (in_ram(st, tbl, (CLOTH_SEC_DATA + 1u) * 8u) &&
+                s_cloth_specs[i].vtab_off <
+                    rd32_fast(st, tbl + CLOTH_SEC_DATA * 8u + 4u)) {
+                bases[i] = rd32_fast(st, tbl + CLOTH_SEC_DATA * 8u);
+                ++found;
+            }
+            break;      /* module names are unique — done with this node */
+        }
+        node = rd32_fast(st, node + DMC_OFF_NEXT);
+    }
+}
+
+static int cloth_classify(const uint32_t* bases, uint32_t nb, uint32_t vtab)
+{
+    uint32_t i;
+    for (i = 0; i < nb; ++i)
+        if (bases[i] && vtab == bases[i] + s_cloth_specs[i].vtab_off)
+            return (int)i;
+    return -1;
+}
+
+static uint32_t cloth_idx_read(CPUState* st, const ClothSpec* sp, uint32_t pkt)
+{
+    return sp->idx_s32 ? rd32_fast(st, pkt + sp->idx_off)
+                       : rd8_fast(st, pkt + sp->idx_off);
+}
+static void cloth_idx_write(CPUState* st, const ClothSpec* sp, uint32_t pkt,
+                            uint32_t v)
+{
+    if (sp->idx_s32) wr32_fast(st, pkt + sp->idx_off, v);
+    else             wr8_fast(st, pkt + sp->idx_off, v);
+}
+
+/* Lerp one cXyz array: dst[i] = a + alpha*(b-a); normals (nrm=1) are
+ * renormalized after the blend. Chunked through small stack buffers so any
+ * vertex count up to CLOTH_MAX_VERTS works. Everything is in_ram-gated;
+ * non-finite results fall back to the src value (same policy as J3D). */
+static int cloth_lerp_arr(CPUState* st, uint32_t da, uint32_t sa,
+                          uint32_t n, float alpha, int nrm)
+{
+    float pa[CLOTH_CHUNK * 3u], ca[CLOTH_CHUNK * 3u];
+    uint32_t done = 0;
+    while (done < n) {
+        const uint32_t c = (n - done < CLOTH_CHUNK) ? n - done : CLOTH_CHUNK;
+        uint32_t i;
+        if (!in_ram(st, da + done * 12u, c * 12u) ||
+            !in_ram(st, sa + done * 12u, c * 12u))
+            return 0;
+        rd_f32_arr(st, da + done * 12u, pa, c * 3u);
+        rd_f32_arr(st, sa + done * 12u, ca, c * 3u);
+        for (i = 0; i < c * 3u; ++i) {
+            float v = pa[i] + alpha * (ca[i] - pa[i]);
+            if (!isfinite(v)) v = ca[i];
+            pa[i] = v;
+        }
+        if (nrm) {
+            for (i = 0; i < c; ++i) {
+                float* v = &pa[i * 3u];
+                const float l2 = v[0]*v[0] + v[1]*v[1] + v[2]*v[2];
+                if (l2 > 1e-12f) {
+                    const float s = 1.0f / sqrtf(l2);
+                    v[0] *= s; v[1] *= s; v[2] *= s;
+                }
+            }
+        }
+        wr_f32_arr(st, da + done * 12u, pa, c * 3u);
+        done += c;
+    }
+    return 1;
+}
+
+/* Warp check over positions only: max per-vertex |b-a|^2 > CLOTH_WARP_D2
+ * means the endpoints are not consecutive-tick-continuous. */
+static int cloth_warped(CPUState* st, uint32_t da, uint32_t sa, uint32_t n)
+{
+    float pa[CLOTH_CHUNK * 3u], ca[CLOTH_CHUNK * 3u];
+    uint32_t done = 0;
+    while (done < n) {
+        const uint32_t c = (n - done < CLOTH_CHUNK) ? n - done : CLOTH_CHUNK;
+        uint32_t i;
+        if (!in_ram(st, da + done * 12u, c * 12u) ||
+            !in_ram(st, sa + done * 12u, c * 12u))
+            return 1;   /* can't verify — treat as unsafe */
+        rd_f32_arr(st, da + done * 12u, pa, c * 3u);
+        rd_f32_arr(st, sa + done * 12u, ca, c * 3u);
+        for (i = 0; i < c; ++i) {
+            const float dx = ca[i*3u] - pa[i*3u];
+            const float dy = ca[i*3u+1u] - pa[i*3u+1u];
+            const float dz = ca[i*3u+2u] - pa[i*3u+2u];
+            const float d2 = dx*dx + dy*dy + dz*dz;
+            if (!isfinite(d2) || d2 > CLOTH_WARP_D2) return 1;
+        }
+        done += c;
+    }
+    return 0;
+}
+
+/* Whole-packet lerp for the rel spec layout: slot dst <- lerp(dst, src).
+ * Covers pos + front nrm + back nrm. Returns 1 when all three arrays were
+ * lerped (caller may then flip the index). */
+static int cloth_lerp_slot(CPUState* st, const ClothSpec* sp, uint32_t pkt,
+                           uint32_t dst, uint32_t src, float alpha)
+{
+    const uint32_t dp = pkt + sp->pos_off + dst * sp->stride;
+    const uint32_t cp = pkt + sp->pos_off + src * sp->stride;
+    if (cloth_warped(st, dp, cp, sp->n)) return 0;
+    if (!cloth_lerp_arr(st, dp, cp, sp->n, alpha, 0)) return 0;
+    if (!cloth_lerp_arr(st, pkt + sp->nrm_off + dst * sp->stride,
+                        pkt + sp->nrm_off + src * sp->stride,
+                        sp->n, alpha, 1)) return 0;
+    if (!cloth_lerp_arr(st, pkt + sp->bck_off + dst * sp->stride,
+                        pkt + sp->bck_off + src * sp->stride,
+                        sp->n, alpha, 1)) return 0;
+    return 1;
+}
+
+/* Flat byte copy of one slot triple (sail L-frame snapshot: slot1 <- slot0).
+ * Each array is copied verbatim — normals are already unit-length. */
+static void cloth_copy_slot(CPUState* st, const ClothSpec* sp, uint32_t pkt,
+                            uint32_t dst, uint32_t src)
+{
+    const uint32_t offs[3] = { sp->pos_off, sp->nrm_off, sp->bck_off };
+    uint32_t a;
+    for (a = 0; a < 3u; ++a) {
+        const uint32_t d = pkt + offs[a] + dst * sp->stride;
+        const uint32_t s = pkt + offs[a] + src * sp->stride;
+        uint32_t done = 0;
+        while (done < sp->n * 12u) {
+            uint32_t w = sp->n * 12u - done;
+            if (w > 0x100u) w = 0x100u;
+            if (!in_ram(st, d + done, w) || !in_ram(st, s + done, w)) break;
+            memcpy(st->ram + (d + done - 0x80000000u),
+                   st->ram + (s + done - 0x80000000u), w);
+            done += w;
+        }
+    }
+}
+
+/* Per-packet work for the Painter-entry walk. On R-render frames: lerp the
+ * stale slot toward current + flip the index (recorded for next-entry
+ * restore). On L frames: restore nothing here (cloth_restore_flips did it)
+ * — just refresh the sail's prev-pose snapshot (slot1 <- slot0, taken while
+ * slot0 still holds the pose this L Painter draws, i.e. last tick's). */
+static void cloth_visit_packet(CPUState* st, uint32_t pkt, int spec_i,
+                               int rframe, float alpha)
+{
+    const ClothSpec* sp = &s_cloth_specs[spec_i];
+    uint32_t idx, dst, src, i;
+    if (!in_ram(st, pkt, sp->span)) return;
+    idx = cloth_idx_read(st, sp, pkt);
+    if (!rframe) {
+        if ((sp->flags & CLOTH_SPEC_SAIL) && idx == 0u)
+            cloth_copy_slot(st, sp, pkt, 1u, 0u);
+        return;
+    }
+    if (idx > 1u) return;
+    if (s_cloth_nflips >= CLOTH_MAX_FLIPS) return; /* unrecorded flips leak:
+        * the index would stay flipped past the next execute — for the sail
+        * (pinned-0 invariant) that would break it outright. Repaint instead. */
+    for (i = 0; i < s_cloth_nflips; ++i)
+        if (s_cloth_flips[i].pkt == pkt) return;  /* already flipped this R   */
+    if (sp->flags & CLOTH_SPEC_SAIL) {
+        if (idx != 0u) return;       /* pinned-0 invariant violated — bail   */
+        dst = 1u; src = 0u;
+    } else {
+        dst = idx ^ 1u; src = idx;
+    }
+    if (!cloth_lerp_slot(st, sp, pkt, dst, src, alpha)) {
+        ++s_cloth_dbg_skip;
+        return;
+    }
+    cloth_idx_write(st, sp, pkt, dst);
+    ++s_cloth_dbg_lerp;
+    s_cloth_flips[s_cloth_nflips].pkt = pkt;
+    s_cloth_flips[s_cloth_nflips].orig = idx;
+    s_cloth_flips[s_cloth_nflips].spec = (uint8_t)spec_i;
+    ++s_cloth_nflips;
+}
+
+/* Restore every index flipped by the last R walk. A flip is only written
+ * back if the packet still classifies as the same spec (vtable check) —
+ * protects a slot whose packet was freed/reused between frames. bases may
+ * be partially zero; unmatched flips are then dropped silently (the index
+ * write into reused memory is skipped). */
+static void cloth_restore_flips(CPUState* st, const uint32_t* bases, uint32_t nb)
+{
+    uint32_t i;
+    for (i = 0; i < s_cloth_nflips; ++i) {
+        ClothFlip* f = &s_cloth_flips[i];
+        const ClothSpec* sp = &s_cloth_specs[f->spec];
+        if (f->spec < nb && bases[f->spec] &&
+            in_ram(st, f->pkt, sp->span) &&
+            rd32_fast(st, f->pkt) == bases[f->spec] + sp->vtab_off)
+            cloth_idx_write(st, sp, f->pkt, f->orig);
+    }
+    s_cloth_nflips = 0;
+}
+
+#define J3DPKT_OFF_NEXT    0x04u        /* J3DPacket::mpNextPacket (chain)    */
+#define J3DPKT_CHAIN_CAP   4096u        /* hard bound vs corrupt next ptrs    */
+
+/* Scan the dDlst_list_c J3DDrawBuffer* members (+0x00..+0x38) -> mpBuf.
+ * entryImm pushes each packet onto the mpBuf[index] HEAD and links the old
+ * head via mpNextPacket, so every non-null slot is a chain (drawHead walks
+ * it the same way). Classify each packet by vtable -> cloth_visit_packet. */
+static void cloth_walk_drawbufs(CPUState* st, const uint32_t* bases, uint32_t nb,
+                                int rframe, float alpha)
+{
+    uint32_t bi, i;
+    for (bi = 0; bi < DDLST_NBUFS; ++bi) {
+        const uint32_t db = rd32_fast(st, DDLST_EA + bi * 4u);
+        uint32_t buf, n;
+        if (!in_ram(st, db, 8u)) continue;
+        buf = rd32_fast(st, db + J3DDB_OFF_BUF);
+        n   = rd32_fast(st, db + J3DDB_OFF_BUFSZ);
+        if (!in_ram(st, buf, 4u) || n > J3DDB_MAX_SLOTS) continue;
+        for (i = 0; i < n && in_ram(st, buf + i * 4u, 4u); ++i) {
+            uint32_t pkt = rd32_fast(st, buf + i * 4u);
+            uint32_t hops = 0;
+            while (pkt && hops < J3DPKT_CHAIN_CAP && in_ram(st, pkt, 4u)) {
+                const int spec_i = cloth_classify(bases, nb, rd32_fast(st, pkt));
+                if (spec_i >= 0)
+                    cloth_visit_packet(st, pkt, spec_i, rframe, alpha);
+                if (!in_ram(st, pkt + J3DPKT_OFF_NEXT, 4u)) break;
+                pkt = rd32_fast(st, pkt + J3DPKT_OFF_NEXT);
+                ++hops;
+            }
+        }
+    }
+}
+
+/* Every-Painter-entry housekeeping (called from on_painter_skip for ALL
+ * frame classes): undo outstanding index flips + a leaked DOL arm, clear
+ * the per-Painter de-dup list, and on L frames refresh the sail snapshot.
+ * Runs even on dup/unsplit entries — a flip can only be outstanding when
+ * an R-render Painter just ran, and the next execute MUST see the real
+ * index before it samples the "old" buffer. */
+static void cloth_painter_entry(CPUState* st)
+{
+    uint32_t bases[CLOTH_NSPEC];
+    uint32_t need;
+    /* Cheap early-out: nothing outstanding and feature off/not in an
+     * interp-capable split. The DOL arm is checked unconditionally — a
+     * draw-return hook misfire must never leak a flipped mCurArr. */
+    if (s_cloth_dol_armed) {
+        s_cloth_dol_armed = 0;
+        if (in_ram(st, s_cloth_dol_self, DCLOTH_SPAN))
+            wr8_fast(st, s_cloth_dol_self + DCLOTH_OFF_CUR, s_cloth_dol_orig);
+    }
+    s_cloth_seen_n = 0;
+    need = s_cloth_nflips ||
+           (s_cloth_interp && s_enabled && s_split_mode &&
+            s_logic_this_frame && s_rframe_render && s_j3d_interp);
+    if (!need) return;
+    memset(bases, 0, sizeof(bases));
+    cloth_resolve_bases(st, bases, CLOTH_NSPEC);
+    cloth_restore_flips(st, bases, CLOTH_NSPEC);
+    if (s_cloth_interp && s_logic_this_frame)
+        cloth_walk_drawbufs(st, bases, CLOTH_NSPEC, 0, 0.0f);
+}
+
+/* R-render path (called inside the s_rframe_render && s_j3d_interp branch
+ * of on_painter_skip, next to jpa_rframe): lerp rel packets' stale slots
+ * and flip their indices for this Painter. */
+static void cloth_rframe(CPUState* st, float alpha)
+{
+    uint32_t bases[CLOTH_NSPEC];
+    if (!s_cloth_interp) return;
+    if (s_noinject || s_fol_cut) return;
+    if (alpha <= 0.0f || alpha >= 1.0f) return;
+    memset(bases, 0, sizeof(bases));
+    cloth_resolve_bases(st, bases, CLOTH_NSPEC);
+    cloth_walk_drawbufs(st, bases, CLOTH_NSPEC, 1, alpha);
+}
+
+/* ---- DOL cloth: dCloth_packet_c::draw entry/return hooks --------------------
+ * this = r3. Entry (R-render only): lerp stale buffer (mCurArr^1) arrays in
+ * place -> flip mCurArr so draw() publishes the lerped pos/nrm/backnrm.
+ * Return: restore mCurArr. The stale buffer is fully rewritten by the next
+ * cloth_move before the sim reads it (it only ever reads the CURRENT
+ * buffer), so nothing authoritative is disturbed. */
+/* De-dup: packets are added to s_cloth_seen ONLY after a successful lerp —
+ * a failed first attempt must not mark the packet (a second draw would
+ * dedup-flip into an un-lerped stale buffer). */
+static int cloth_dol_is_seen(uint32_t pkt)
+{
+    uint32_t i;
+    for (i = 0; i < s_cloth_seen_n; ++i)
+        if (s_cloth_seen[i] == pkt) return 1;
+    return 0;
+}
+static void cloth_dol_mark(uint32_t pkt)
+{
+    if (s_cloth_seen_n < CLOTH_SEEN_MAX)
+        s_cloth_seen[s_cloth_seen_n++] = pkt;
+}
+
+static void on_cloth_draw_entry(CPUState* st)
+{
+    float alpha;
+    uint32_t self, cur, n, i;
+    uint32_t pa, pb, na, nb, ba, bb;
+    int dedup, ok = 0;
+    if (!s_cloth_interp) return;
+    if (s_logic_this_frame || s_r_dup || s_noinject || s_fol_cut) return;
+    if (!(s_split_mode && s_rframe_render && s_j3d_interp)) return;
+    alpha = s_interp_alpha;
+    if (alpha <= 0.0f || alpha >= 1.0f) return;
+    self = st->gpr[3];
+    if (!in_ram(st, self, DCLOTH_SPAN)) return;
+    cur = rd8_fast(st, self + DCLOTH_OFF_CUR) & 1u;
+    n = rd32_fast(st, self + DCLOTH_OFF_FLY) *
+        rd32_fast(st, self + DCLOTH_OFF_HOIST);
+    if (n == 0u || n > CLOTH_MAX_VERTS) return;
+    dedup = cloth_dol_is_seen(self);
+    if (!dedup) {
+        pa = rd32_fast(st, self + DCLOTH_OFF_POS + cur * 4u);
+        pb = rd32_fast(st, self + DCLOTH_OFF_POS + (cur ^ 1u) * 4u);
+        na = rd32_fast(st, self + DCLOTH_OFF_NRM + cur * 4u);
+        nb = rd32_fast(st, self + DCLOTH_OFF_NRM + (cur ^ 1u) * 4u);
+        ba = rd32_fast(st, self + DCLOTH_OFF_BCK + cur * 4u);
+        bb = rd32_fast(st, self + DCLOTH_OFF_BCK + (cur ^ 1u) * 4u);
+        {
+            const uint32_t a[6] = { pa, pb, na, nb, ba, bb };
+            ok = 1;
+            for (i = 0; i < 6u; ++i)
+                if (!a[i] || !in_ram(st, a[i], n * 12u)) ok = 0;
+        }
+        if (!ok) return;
+        if (cloth_warped(st, pb, pa, n)) { ++s_cloth_dbg_skip; return; }
+        if (!cloth_lerp_arr(st, pb, pa, n, alpha, 0)) return;
+        if (!cloth_lerp_arr(st, nb, na, n, alpha, 1)) return;
+        if (!cloth_lerp_arr(st, bb, ba, n, alpha, 1)) return;
+        cloth_dol_mark(self);   /* only now: a later draw may safely dedup */
+        ++s_cloth_dbg_lerp;
+    }
+    /* Flip AFTER success (or on a de-duped second draw — the lerped buffer
+     * is still in place): draw() then publishes the interpolated arrays;
+     * a failed lerp leaves mCurArr alone = plain repaint. */
+    wr8_fast(st, self + DCLOTH_OFF_CUR, cur ^ 1u);
+    s_cloth_dol_self = self;
+    s_cloth_dol_orig = (uint8_t)cur;
+    s_cloth_dol_armed = 1;
+}
+
+static void on_cloth_draw_return(CPUState* st)
+{
+    if (!s_cloth_dol_armed) return;
+    s_cloth_dol_armed = 0;
+    if (in_ram(st, s_cloth_dol_self, DCLOTH_SPAN))
+        wr8_fast(st, s_cloth_dol_self + DCLOTH_OFF_CUR, s_cloth_dol_orig);
+}
+
 /* ---- M1: shared runtime-state reset -----------------------------------------
  * Called on the split engage/disengage edges and from on_unload. Clears every
  * per-frame mutable static so a stale snapshot/lerp/armed-flag can never leak
@@ -4566,15 +5141,30 @@ static void f60_reset_runtime_state(CPUState* st)
      * a disengage edge can land between an R inject and the next L entry. */
     if (st) jpa_restore(st);
     memset(s_jpa, 0, sizeof(s_jpa));
+    /* Cloth: undo outstanding index flips + a leaked DOL draw-hook arm.
+     * The raw restore skips the vtab verify (bases are not resolved here)
+     * — writing the recorded original index is correct whenever the packet
+     * memory is still mapped, same standard as jpa_restore. */
+    if (st) {
+        uint32_t ci;
+        if (s_cloth_dol_armed && in_ram(st, s_cloth_dol_self, DCLOTH_SPAN))
+            wr8_fast(st, s_cloth_dol_self + DCLOTH_OFF_CUR, s_cloth_dol_orig);
+        for (ci = 0; ci < s_cloth_nflips; ++ci) {
+            ClothFlip* f = &s_cloth_flips[ci];
+            const ClothSpec* sp = &s_cloth_specs[f->spec];
+            if (in_ram(st, f->pkt, sp->idx_off + 4u))
+                cloth_idx_write(st, sp, f->pkt, f->orig);
+        }
+    }
+    s_cloth_nflips = 0;
+    s_cloth_dol_armed = 0;
+    s_cloth_seen_n = 0;
+    s_cloth_dbg_lerp = s_cloth_dbg_skip = 0;
     if (st)
         s_list_heap = rd8_fast(st, GINF_MCURRHEAP) & 1u;
     else
         s_list_heap = 0;
 }
-
-/* budget constants for TB-14 */
-static const uint32_t J3D_BUDGET_TYPICAL_KIB = 140; /* 1500*96≈144000 ≈140.6 rounded */
-static const uint32_t J3D_BUDGET_HEAVY_KIB = 300;   /* 3200*96=307200 */
 
 /* Optional: export to let a future 60Hz-logic sweep (Option C) query
  * whether this frame is logic or render-only, or to let QA sample
@@ -4815,6 +5405,16 @@ static const ModernGekkoModHook hooks_interp[] = {
     RECOMP_HOOK_RETURN(0x8007960Cu, on_tree_draw_return),
 };
 
+/* Cloth hooks — registered only when MODERNGEKKO_F60_CLOTH_INTERP=1 (and
+ * the interp block is armed). ~1 call per packet per Painter — paired
+ * return hooks are safe at this rate (same class as the foliage draws).
+ * Rel-side cloth (sail/flags) needs no hooks: it is driven from the
+ * Painter-entry walk inside on_painter_skip. */
+static const ModernGekkoModHook hooks_cloth[] = {
+    RECOMP_HOOK(DCLOTH_DRAW_EA, on_cloth_draw_entry),   /* dCloth_packet_c::draw  */
+    RECOMP_HOOK_RETURN(DCLOTH_DRAW_EA, on_cloth_draw_return),
+};
+
 /* Stale-entry purge: JKR free funnels, split into separately-armable groups.
  * `delete` routes through operator delete -> static JKRHeap::free(ptr,heap)
  * -> member free() — the tail calls are intra-chunk, so each funnel needs
@@ -4895,6 +5495,7 @@ static ModernGekkoModHook hooks_active[
     sizeof(hooks_vilog) / sizeof(hooks_vilog[0]) +
     sizeof(hooks_libm) / sizeof(hooks_libm[0]) +
     sizeof(hooks_interp) / sizeof(hooks_interp[0]) +
+    sizeof(hooks_cloth) / sizeof(hooks_cloth[0]) +
     sizeof(hooks_purge_free) / sizeof(hooks_purge_free[0]) +
     sizeof(hooks_purge_bulk) / sizeof(hooks_purge_bulk[0])];
 
@@ -4918,6 +5519,9 @@ MODERNGEKKO_MOD_EXPORT const ModernGekkoModDesc* moderngekko_get_mod(void)
         if (s_j3d_interp) {
             for (i = 0; i < (uint32_t)(sizeof(hooks_interp) / sizeof(hooks_interp[0])); ++i)
                 hooks_active[n++] = hooks_interp[i];
+            if (s_cloth_interp)
+                for (i = 0; i < (uint32_t)(sizeof(hooks_cloth) / sizeof(hooks_cloth[0])); ++i)
+                    hooks_active[n++] = hooks_cloth[i];
             if (s_purge_free)
                 for (i = 0; i < (uint32_t)(sizeof(hooks_purge_free) / sizeof(hooks_purge_free[0])); ++i)
                     hooks_active[n++] = hooks_purge_free[i];
