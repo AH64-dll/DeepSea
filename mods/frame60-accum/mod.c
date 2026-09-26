@@ -205,7 +205,17 @@ static uint32_t s_purge_epoch_always = 0; /* MODERNGEKKO_F60_PURGE_EPOCH_ALWAYS 
 static uint32_t s_force_else = 0;     /* MODERNGEKKO_F60_FORCE_ELSE — L-frames take else-branch */
 static uint32_t s_prio_boost = 1;     /* MODERNGEKKO_F60_PRIORITY — 0=off 1=above-normal 2=highest */
 static int      s_prio_applied = 0;   /* emu thread priority currently raised */
+static uint32_t s_dirty_exact = 1;    /* MODERNGEKKO_F60_DIRTY_EXACT — endpoint-diff dirty gate */
+static uint32_t s_sparse_wr = 1;      /* MODERNGEKKO_F60_SPARSE_WR — write only changed 48B mtx */
+static uint32_t s_ovlp_gate_peek = 1; /* MODERNGEKKO_F60_OVLP_PEEK — phase-aware dup narrowing   */
+static uint32_t s_mdllog = 0;         /* MODERNGEKKO_F60_MDLLOG — per-model coverage dump        */
 static uint32_t s_overlap_active = 0; /* fopOvlpM overlap in flight — R-frames take dup present  */
+static uint32_t s_ovlp_peek = 0;      /* overlap request mIsPeek (+0x08) sampled this iteration —
+                                       * 1 while the cover/peek (WaitOfFadeout) phase is active */
+static uint32_t s_ovlp_phase = 0;     /* request mPhs.id (+0x1C): 0-3 scene live, >=4 teardown    */
+static uint32_t s_ovlp_peek_dbg = 0;  /* last peek value the debug line reported                 */
+static uint64_t s_dbg_ovr_rep = 0;    /* R-frames repainted while overlap active (peek==0)       */
+static uint32_t s_mdllog_l = 0;       /* L-frames since the last MDLLOG coverage dump            */
 static uint32_t s_r_dup = 0;          /* this iteration: R-frame was redirected to dup present —
                                        * render-path gates key off it so hybrid dup frames get
                                        * the exact pure-dup semantics (no exchange, no endGX,
@@ -452,6 +462,23 @@ static void frame60_accum_on_load(const ModernGekkoModHostApi* api)
         if (dc) s_drawlist_chk = (dc[0] != '0');
         const char* ma = getenv("MODERNGEKKO_F60_MODEL_ALIVE");
         if (ma) s_model_alive = (ma[0] != '0');
+        /* characters lane knobs (wave2): DIRTY_EXACT=1 makes the J3D pose
+         * history dirty iff any observed endpoint element differs — the old
+         * 0.02f whole-model dead-zone (an idle-pose/slow-motion freeze) is
+         * kept behind =0 for A/B. SPARSE_WR=1 bounds guest matrix writes to
+         * the 48B blocks whose lerp differs from what the live array already
+         * holds; =0 restores the full-array write (same visible output).
+         * OVLP_PEEK=1 narrows the overlap dup gate to the request's teardown
+         * phases (mPhs.id >= 4 — the scene-swap boundary where frees can
+         * land); =0 restores dup-for-the-whole-request. */
+        const char* de = getenv("MODERNGEKKO_F60_DIRTY_EXACT");
+        if (de) s_dirty_exact = (de[0] != '0');
+        const char* sw = getenv("MODERNGEKKO_F60_SPARSE_WR");
+        if (sw) s_sparse_wr = (sw[0] != '0');
+        const char* op = getenv("MODERNGEKKO_F60_OVLP_PEEK");
+        if (op) s_ovlp_gate_peek = (op[0] != '0');
+        const char* ml = getenv("MODERNGEKKO_F60_MDLLOG");
+        if (ml) s_mdllog = (ml[0] == '1');
         const char* ci = getenv("MODERNGEKKO_F60_CAM_INTERP");
         if (ci) s_cam_interp = (ci[0] != '0');
         const char* nj = getenv("MODERNGEKKO_F60_NOINJECT");
@@ -492,6 +519,7 @@ static void j3d_rframe_inject(CPUState* state, float alpha);
 static void j3d_rframe_refresh(CPUState* state);
 static void j3d_restore_injected(CPUState* state);
 static void j3d_snapshot_pose(CPUState* state);
+static void j3d_mdl_dump(void);
 static void camview_lframe(CPUState* state);
 static void camview_rframe(CPUState* state);
 static void camview_install(CPUState* state, float alpha);
@@ -639,6 +667,8 @@ static void frame60_accum_decide(CPUState* state, uint32_t* disp_out)
         s_acc = 0;
         s_first = 0;
         s_overlap_active = 0;
+        s_ovlp_peek = 0;
+        s_ovlp_phase = 0;
         s_pair_pad = 0;
         s_l_delta = 0;
         return;
@@ -741,17 +771,57 @@ static void frame60_accum_decide(CPUState* state, uint32_t* disp_out)
      * cadence still holds at 30Hz — no 2x logic, just dup presents.
      * l_fopOvlpM_overlap[0] @0x803F6160 (GZLE01 BSS). */
     {
-        const uint32_t ovr = (rd32_fast(state, 0x803F6160u) != 0u) ? 1u : 0u;
-        if (s_debug && ovr != s_overlap_active)
-            fprintf(stderr, "[f60] overlap %s — R-frames %s\n",
-                    ovr ? "engaged" : "cleared",
-                    ovr ? "-> dup present" : "resume normal path");
+        const uint32_t req = rd32_fast(state, 0x803F6160u);
+        const uint32_t ovr = (req != 0u) ? 1u : 0u;
+        /* overlap_request_class layout (decomp-verified):
+         *   +0x08 mIsPeek — set every tick in phase_WaitOfFadeout, cleared
+         *         when the task's mRq completes in phase_IsWaitOfFadeout;
+         *   +0x1C mPhs.id — the request's phase index into phaseMethod[8]:
+         *         0 Create, 1 IsCreated, 2 IsComplete, 3 WaitOfFadeout,
+         *         4 IsWaitOfFadeout, 5 IsDone, 6 Done.
+         * The phases split the request into exactly the two regimes the
+         * dup gate cares about. Phases 0-3 run while the OLD scene is
+         * still alive and being presented — during 3 (peek) the cover task
+         * draws the old scene under the fade, so repainting interpolates
+         * real on-screen content (this is the window the whole-request dup
+         * used to freeze). Phases 4-6 begin once the task's mRq reports
+         * done: the requester proceeds to swap scenes, i.e. teardown
+         * frees + scene-init allocates start hitting the persistent
+         * packet list / J3D arrays — repaint there walks dangling data
+         * (observed: two stalls on ovlphang-d7 / cold-boot with repaint
+         * active at peek==0). So the safe criterion is the PHASE, not the
+         * peek bit: repaint iff phase <= 3; dup iff phase >= 4 or the
+         * request can't be proven readable. The bit/phase only advance
+         * inside fapGm_After on L-frames, so the sample is stable across
+         * the whole R-frame. */
+        uint32_t phase = 7u;
+        if (ovr) {
+            if (!in_ram(state, req, 0x20u)) {
+                phase = 7u;                       /* can't prove safe -> teardown side */
+                s_ovlp_peek = 1u;
+            } else {
+                phase = rd32_fast(state, req + 0x1Cu);
+                if (phase > 7u) phase = 7u;
+                s_ovlp_peek = rd32_fast(state, req + 0x08u) != 0u ? 1u : 0u;
+            }
+        } else {
+            s_ovlp_peek = 0u;
+        }
+        if (s_debug && (ovr != s_overlap_active ||
+                        (ovr && (s_ovlp_peek != s_ovlp_peek_dbg || phase != s_ovlp_phase))))
+            fprintf(stderr, "[f60] overlap %s peek=%u ph=%u — R-frames %s\n",
+                    ovr ? "engaged" : "cleared", (unsigned)s_ovlp_peek,
+                    (unsigned)phase,
+                    (ovr && (!s_ovlp_gate_peek || phase >= 4u))
+                        ? "-> dup present" : "-> repaint");
         s_overlap_active = ovr;
+        s_ovlp_peek_dbg = s_ovlp_peek;
+        s_ovlp_phase = phase;
     }
     if (s_debug) {
         if (s_logic_this_frame) ++s_dbg_lframes; else ++s_dbg_rframes;
         if (((s_dbg_lframes + s_dbg_rframes) & 0x07u) == 0) {
-            fprintf(stderr, "[f60] L=%llu R=%llu (%.1f%% L) acc=%llu inj=%llu/%llu res=%llu/%llu snap=%llu trk=%u snapcall=%llu skipni=%llu rep=%llu capKB=%llu pat=%llu nofifo=%llu np=%llu nc=%llu\n",
+            fprintf(stderr, "[f60] L=%llu R=%llu (%.1f%% L) acc=%llu inj=%llu/%llu res=%llu/%llu snap=%llu trk=%u snapcall=%llu skipni=%llu rep=%llu capKB=%llu pat=%llu nofifo=%llu np=%llu nc=%llu ovr=%llu\n",
                     (unsigned long long)s_dbg_lframes,
                     (unsigned long long)s_dbg_rframes,
                     100.0 * (double)s_dbg_lframes / (double)(s_dbg_lframes + s_dbg_rframes),
@@ -766,7 +836,8 @@ static void frame60_accum_decide(CPUState* state, uint32_t* disp_out)
                     (unsigned long long)s_dbg_patched,
                     (unsigned long long)s_dbg_nofifo,
                     (unsigned long long)s_dbg_np,
-                    (unsigned long long)s_dbg_nc);
+                    (unsigned long long)s_dbg_nc,
+                    (unsigned long long)s_dbg_ovr_rep);
             {
                 /* pk = non-NULL packet count of each draw buffer's mpBuf
                  * (scan capped at 96 slots); frameInit() zeroes the array,
@@ -1930,18 +2001,34 @@ static void on_painter_skip(CPUState* state)
                 if (s_cost) { s_c_jpa_ns += host_now_ns() - tj; ++s_c_jpa_n; }
             }
             s_fol_cut = 0;
+            if (s_mdllog && ++s_mdllog_l >= 300u) {
+                s_mdllog_l = 0;
+                j3d_mdl_dump();
+            }
         }
         if (s_vilog)
             vilog_note_eye(state);
         return;
     }
-    /* Overlap in flight: take the SAFE R-frame — the duplicate-present
-     * tail-call touches neither the persistent packet list nor the J3D
-     * arrays while scene teardown may be freeing them (the reason the guard
-     * exists). The 30Hz cadence is untouched (see frame60_accum_decide), so
-     * fades/wipes/timers keep retail timing. FIFO replay also falls back:
-     * re-patching a captured stream is unsafe mid-teardown. */
-    if (s_overlap_active) {
+    /* Overlap request in its teardown phases: take the SAFE R-frame — the
+     * duplicate-present tail-call touches neither the persistent packet
+     * list nor the J3D arrays while scene teardown may be freeing them
+     * (the reason the guard exists). Narrowed (MODERNGEKKO_F60_OVLP_PEEK,
+     * default on) from the whole request to its teardown tail: the
+     * request's mPhs.id runs 0-3 while the OLD scene is alive and drawn —
+     * phases 0-2 are normal scene rendering with the cover task spawning,
+     * phase 3 (WaitOfFadeout, mIsPeek==1) is the peek window where the
+     * task draws the old scene under the fade — repaint interpolates real
+     * on-screen content in all of them. Phases 4-6
+     * (IsWaitOfFadeout/IsDone/Done) are the completion boundary where the
+     * requester proceeds to swap scenes — the window that can free what
+     * repaint would touch — so those dup. An unreadable request also dups
+     * (can't prove safety). s_ovlp_gate_peek=0 restores the old
+     * whole-request dup. The 30Hz cadence is untouched either way (see
+     * frame60_accum_decide), so fades/wipes/timers keep retail timing.
+     * FIFO replay also falls back: re-patching a captured stream is
+     * unsafe mid-teardown. */
+    if (s_overlap_active && (!s_ovlp_gate_peek || s_ovlp_phase >= 4u)) {
         ++s_dbg_ovr_dup;
     } else if (s_wnum_gate && rd8_fast(state, GAMEINFO_WNUM) == 0u) {
         /* windowNum==0: Painter's whole 3D/deferred pipeline is off and the
@@ -1964,6 +2051,10 @@ static void on_painter_skip(CPUState* state)
          * lists not yet populated during scene init. Safer to dup. */
         ++s_dbg_gp_dup;
     } else if (s_rframe_render && s_j3d_interp) {
+        /* Overlap request alive but in a scene-live phase (0-3): the
+         * scene on screen is intact — repaint/interpolate instead of dup,
+         * counted separately. */
+        if (s_overlap_active) ++s_dbg_ovr_rep;
         /* Refresh observes whatever production left between the L-frame's
          * snapshot and now: the L-frame's OWN production ran after its
          * Painter (execute/draw tail of fpcM_Management), so node/env AND
@@ -2281,12 +2372,34 @@ typedef struct {
     uint32_t has_prev_draw;
     uint32_t dirty_draw;
     uint32_t injected;        /* live arrays currently hold our lerp bits */
+    /* Per-array "live content" mask — which guest array currently holds OUR
+     * scratch bytes (bit per array kind below). `injected` is model-level
+     * and latches if ANY array was touched; the sparse-writer's ref check
+     * needs per-array precision: node vs env vs draw track independently
+     * (e.g. an env pair seeded later than the node pair). The bit is set by
+     * apply (post-write live==scratch) and by refresh's ours-check, cleared
+     * by every observer/restorer that re-establishes live==curr. */
+    uint32_t inj_mask;
     J3DMtx* prev_draw;
     J3DMtx* curr_draw;
     J3DMtx* scratch_draw;
+    /* Per-model coverage audit (MODERNGEKKO_F60_MDLLOG): observations,
+     * dirty-marked observations, inject installs, guest blocks written and
+     * teleport reseeds — dumped periodically keyed by guest ptr + counts so
+     * cl.bdl (42 joints / 120 env) and friends are identifiable. */
+    uint32_t lg_snap;
+    uint32_t lg_dirty;
+    uint32_t lg_inj;
+    uint32_t lg_injb;
+    uint32_t lg_tp;
     uint32_t seen_epoch;    /* s_purge_epoch at this slot's last ensure()   */
     int used;
 } J3DHistory;
+
+/* inj_mask bits: which guest array live-holds our scratch bytes. */
+#define J3D_INJ_NODE 0x1u   /* mpNodeMtx        (0x20 ConcatView models) */
+#define J3D_INJ_ENV  0x2u   /* mpWeightEnvMtx   (0x20 ConcatView models) */
+#define J3D_INJ_DRAW 0x4u   /* mpDrawMtxBuf[1][viewNo] (buffered models) */
 
 static J3DHistory s_hist[J3D_MAX_MODELS];
 static uint32_t s_hist_gen = 1;
@@ -2319,6 +2432,42 @@ static void j3d_dbg_counts(const char* tag)
         tag, (unsigned long long)s_dbg_entrymd, (unsigned long long)s_dbg_calcent,
         (unsigned long long)s_dbg_calcret, (unsigned long long)s_dbg_vcent,
         (unsigned long long)s_dbg_vcret, (unsigned long long)s_dbg_dtor);
+}
+
+/* Per-model coverage audit (MODERNGEKKO_F60_MDLLOG=1): one line per used
+ * history slot keyed by guest model ptr + modelData + joint/env counts +
+ * flags_f0/draw_mtx_num — enough to identify cl.bdl (Link body: 42 joints /
+ * 120 env matrices, flags 0x20), katsura/hands/equipment, NPCs, enemies, the
+ * boat and animals. Columns: snap = L-frame observations, dt = observations
+ * that set dirty (a real pose change — with the exact gate every moved
+ * matrix counts), inj = R-frame inject installs, blk = 48B guest matrices
+ * actually written (sparse), tp = teleport reseeds. A model that moves on
+ * screen but shows inj==0 or dt==0 is a coverage gap to chase. Debug-only:
+ * zero cost while the env is unset. */
+static void j3d_mdl_dump(void)
+{
+    uint32_t n = 0, ni = 0, dead = 0;
+    fprintf(stderr, "[f60-mdl] --- coverage dump (trk=%u) ---\n",
+            (unsigned)s_hist_used);
+    for (uint32_t i = 0; i < J3D_MAX_MODELS; ++i) {
+        const J3DHistory* h = &s_hist[i];
+        if (!h->used) continue;
+        ++n;
+        if (h->no_interp) ++ni;
+        if (!h->model_data) ++dead;
+        fprintf(stderr,
+            "[f60-mdl] mdl=%08X md=%08X j=%u e=%u fl=%02X dn=%u%s%s "
+            "snap=%u dt=%u inj=%u blk=%u tp=%u\n",
+            (unsigned)h->guest_model_ptr, (unsigned)h->model_data,
+            (unsigned)h->joint_num, (unsigned)h->wEvlp_num,
+            (unsigned)h->flags_f0, (unsigned)h->draw_mtx_num,
+            h->no_interp ? " NI" : "",
+            (h->joint_num == 42u && h->wEvlp_num == 120u) ? " cl.bdl?" : "",
+            (unsigned)h->lg_snap, (unsigned)h->lg_dirty,
+            (unsigned)h->lg_inj, (unsigned)h->lg_injb, (unsigned)h->lg_tp);
+    }
+    fprintf(stderr, "[f60-mdl] --- %u used (%u no_interp, %u unconfigured) ---\n",
+            (unsigned)n, (unsigned)ni, (unsigned)dead);
 }
 
 static J3DHistory* j3d_find(uint32_t guest_ptr)
@@ -2403,7 +2552,7 @@ J3DHistory* j3d_history_ensure(uint32_t guest_ptr, uint32_t joint_num, uint32_t 
         h->draw_mtx_num = 0; h->draw_ptr = 0; h->draw_buf1 = 0; h->view_no = 0;
         h->draw_gen = 0;
         h->node_ptr = h->env_ptr = 0;
-        h->model_data = 0; h->flags_f0 = 0; h->injected = 0;
+        h->model_data = 0; h->flags_f0 = 0; h->injected = 0; h->inj_mask = 0;
     }
     if (!h) h = j3d_alloc_slot(guest_ptr);
     if (!h) return 0;
@@ -2415,7 +2564,7 @@ J3DHistory* j3d_history_ensure(uint32_t guest_ptr, uint32_t joint_num, uint32_t 
         h->seen_epoch = s_purge_epoch;
         h->has_prev = 0; h->dirty = 0; h->teleported = 0;
         h->has_prev_env = 0; h->has_prev_draw = 0; h->dirty_draw = 0;
-        h->injected = 0;
+        h->injected = 0; h->inj_mask = 0;
     }
     if (!h->prev)
     {
@@ -2425,7 +2574,9 @@ J3DHistory* j3d_history_ensure(uint32_t guest_ptr, uint32_t joint_num, uint32_t 
         h->flags_f0 = 0; h->draw_mtx_num = 0; h->view_no = 0; h->draw_ptr = 0;
         h->draw_buf1 = 0; h->draw_gen = 0;
         h->has_prev_env = 0; h->has_prev_draw = 0; h->dirty_draw = 0;
-        h->injected = 0;
+        h->injected = 0; h->inj_mask = 0;
+        h->lg_snap = 0; h->lg_dirty = 0; h->lg_inj = 0; h->lg_injb = 0;
+        h->lg_tp = 0;
         h->no_interp = no_interp_flag ? 1u : 0u;
         h->has_prev = 0; h->dirty = 0; h->teleported = 0;
         h->gen = s_hist_gen++;
@@ -2476,7 +2627,9 @@ static void j3d_slot_reset(J3DHistory* h)
     h->has_prev_env = 0; h->has_prev_draw = 0; h->dirty_draw = 0;
     h->draw_mtx_num = 0; h->draw_ptr = 0; h->draw_buf1 = 0; h->draw_gen = 0;
     h->node_ptr = h->env_ptr = 0; h->model_data = 0; h->flags_f0 = 0;
-    h->injected = 0;
+    h->injected = 0; h->inj_mask = 0;
+    h->lg_snap = 0; h->lg_dirty = 0; h->lg_inj = 0; h->lg_injb = 0;
+    h->lg_tp = 0;
     if (s_hist_used) --s_hist_used;
     /* Ownership changed under this address — bump the reuse epoch so every
      * other slot revalidates its pose pair on next ensure() (same-count
@@ -2538,8 +2691,10 @@ int j3d_history_rotate(uint32_t guest_ptr, const J3DMtx* new_mtx, uint32_t n)
     if (h->wEvlp_num && h->prev_env && h->curr_env) memcpy(h->prev_env, h->curr_env, (size_t)h->wEvlp_num * J3D_MTX_BYTES);
     memcpy(h->curr, new_mtx, (size_t)n * J3D_MTX_BYTES);
     if (h->wEvlp_num && h->curr_env) memcpy(h->curr_env, new_mtx, (size_t)env_src_n * J3D_MTX_BYTES); /* placeholder copy */
-    /* dirty if any joint moved > eps */
-    const float eps = 0.02f;
+    /* dirty iff any joint endpoint changed — same rule as production
+     * hist_rotate (eps==0 under MODERNGEKKO_F60_DIRTY_EXACT, the shipped
+     * default; =0 restores the legacy 0.02f dead-zone). */
+    const float eps = s_dirty_exact ? 0.0f : 0.02f;
     int dirty = 0;
     for (uint32_t j = 0; j < n && !dirty; ++j)
         for (int r = 0; r < 3 && !dirty; ++r)
@@ -2736,6 +2891,34 @@ static void write_mtx_arr(CPUState* st, uint32_t addr, const J3DMtx* src, uint32
             moderngekko_mod_write(st, addr + i * 4u, w, 4u);
         }
     }
+}
+
+/* Sparse variant (MODERNGEKKO_F60_SPARSE_WR, default on): store only the 48B
+ * matrices whose src bytes differ from ref[j]. ref must describe what the
+ * live array already holds — curr after a fresh observation, our scratch on
+ * consecutive R-frames — so a skipped block leaves live==ref==scratch bytes
+ * intact and the scratch-match restore/refresh protocol stays bit-exact.
+ * Bounds the guest writes to the bones that actually moved this step (idle
+ * poses touch a handful of joints; a full-model write was ~120x48B anyway).
+ * Returns the number of 48B matrices written. Callers hold the "ref==live"
+ * invariant via J3DHistory::inj_mask; when unsure they pass curr and accept a
+ * possibly-redundant write (never a wrongly-skipped one). */
+static uint32_t write_mtx_arr_diff(CPUState* st, uint32_t addr,
+                                   const J3DMtx* src, const J3DMtx* ref,
+                                   uint32_t n)
+{
+    uint32_t wr = 0;
+    if (!s_sparse_wr) {
+        write_mtx_arr(st, addr, src, n);
+        return n;
+    }
+    for (uint32_t j = 0; j < n; ++j) {
+        if (memcmp(&src[j], &ref[j], J3D_MTX_BYTES) != 0) {
+            write_mtx_arr(st, addr + j * J3D_MTX_BYTES, &src[j], 1u);
+            ++wr;
+        }
+    }
+    return wr;
 }
 
 /* ---- stale-entry purge + liveness (post-transition crash fix) ---------------
@@ -3480,7 +3663,16 @@ static void hist_rotate(J3DMtx* prev, J3DMtx* curr, const J3DMtx* newm, uint32_t
     }
     memcpy(prev, curr, (size_t)n * J3D_MTX_BYTES);
     memcpy(curr, newm, (size_t)n * J3D_MTX_BYTES);
-    const float eps = 0.02f;
+    /* Dirty iff any endpoint element actually changed. The original 0.02f
+     * whole-model dead-zone was a cost short-circuit (skip lerping a pose
+     * that "didn't move") — but it swallowed exactly the sub-threshold idle /
+     * slow-motion deltas this mod exists to show, freezing characters at the
+     * L pose on every R-frame. Identical endpoints are already a no-op lerp
+     * (and dirty==0 skips even the memcmp/write), so exact comparison is the
+     * correct criterion: eps==0 -> `d > 0` == "changed" (NaN stays
+     * not-dirty, +0/-0 compare equal). MODERNGEKKO_F60_DIRTY_EXACT=0 restores
+     * the old threshold for A/B. */
+    const float eps = s_dirty_exact ? 0.0f : 0.02f;
     int dirty = 0;
     for (uint32_t j = 0; j < n && !dirty; ++j)
         for (int r = 0; r < 3 && !dirty; ++r)
@@ -3577,10 +3769,12 @@ static void snap_or_restore(CPUState* state, uint32_t arr_ea,
 {
     read_mtx_arr(state, arr_ea, s_tmp_mtx, n);
     if (scratch && memcmp(s_tmp_mtx, scratch, (size_t)n * J3D_MTX_BYTES) == 0) {
-        write_mtx_arr(state, arr_ea, curr, n);
+        /* live==scratch verified — restoring curr need only rewrite the
+         * blocks that differ (the ones we actually lerped); skipped blocks
+         * already hold curr bytes. */
+        s_rest_writes += write_mtx_arr_diff(state, arr_ea, curr, scratch, n);
         memcpy(s_tmp_mtx, curr, (size_t)n * J3D_MTX_BYTES);
         ++s_rest_models;
-        s_rest_writes += n;
     }
 }
 
@@ -3608,8 +3802,24 @@ static void j3d_snapshot_pose(CPUState* state)
         /* Stale-slot drop: model memory dead/reused without the dtor hook. */
         if (s_model_alive && !j3d_model_alive(state, h)) { j3d_slot_reset(h); continue; }
         ++s_snap_models;
+        ++h->lg_snap;
         const uint32_t was_injected = h->injected;
+        const uint32_t was_tele = h->teleported;
+        /* lg_dirty: the pose-changed flag meaningful at this point is the
+         * one left by the LAST observation — the preceding R-frame refresh
+         * rotate (execute writes the next pose after the L-Painter, so the
+         * refresh is where a moved pose is first seen) or a foreign-write
+         * observation. This snapshot's own rotate then re-checks live vs
+         * prev — which is always identical right after the scratch restore,
+         * so the POST-rotate flag would read 0 even for a walking character
+         * (which is why the old dt counts stuck at ~1). Count the pre-rotate
+         * flags instead, OR'd with any fresh diff this rotate itself sees. */
+        const uint32_t was_dirty = h->dirty;
+        const uint32_t was_ddraw = h->dirty_draw;
         h->injected = 0;
+        /* Post-snapshot every array holds the observed pose (restored curr or
+         * fresh production bytes) — nothing of ours lives anywhere. */
+        h->inj_mask = 0;
         if (h->flags_f0 == 0x20u) {
             /* ConcatView models consume node/env directly at draw. */
             if (!(h->joint_num && h->prev && h->curr && J3D_IN_MEM1(h->node_ptr)))
@@ -3620,6 +3830,7 @@ static void j3d_snapshot_pose(CPUState* state)
                 read_mtx_arr(state, h->node_ptr, s_tmp_mtx, h->joint_num);
             hist_rotate(h->prev, h->curr, s_tmp_mtx, h->joint_num,
                         &h->has_prev, &h->dirty, &h->teleported);
+            if (was_dirty || h->dirty) ++h->lg_dirty;
             if (h->wEvlp_num && h->prev_env && h->curr_env && J3D_IN_MEM1(h->env_ptr)) {
                 uint32_t d = 0, t = 0;
                 if (was_injected && h->scratch_env)
@@ -3653,7 +3864,9 @@ static void j3d_snapshot_pose(CPUState* state)
                 read_mtx_arr(state, arr, s_tmp_mtx, dn);
             hist_rotate(h->prev_draw, h->curr_draw, s_tmp_mtx, dn,
                         &h->has_prev_draw, &h->dirty_draw, &h->teleported);
+            if (was_ddraw || h->dirty_draw) ++h->lg_dirty;
         }
+        if (h->teleported && !was_tele) ++h->lg_tp;
     }
 }
 
@@ -3706,6 +3919,9 @@ static void j3d_rframe_refresh(CPUState* state)
                 if (!ours && memcmp(s_tmp_mtx, h->curr, (size_t)h->joint_num * J3D_MTX_BYTES) != 0)
                     hist_rotate(h->prev, h->curr, s_tmp_mtx, h->joint_num,
                                 &h->has_prev, &h->dirty, &h->teleported);
+                /* live content established: ours -> scratch, else curr */
+                h->inj_mask = ours ? (h->inj_mask | J3D_INJ_NODE)
+                                   : (h->inj_mask & ~J3D_INJ_NODE);
             }
             if (h->wEvlp_num && h->curr_env && J3D_IN_MEM1(h->env_ptr)) {
                 read_mtx_arr(state, h->env_ptr, s_tmp_mtx, h->wEvlp_num);
@@ -3718,6 +3934,8 @@ static void j3d_rframe_refresh(CPUState* state)
                     if (d) h->dirty = 1u;
                     if (t) h->teleported = 1u;
                 }
+                h->inj_mask = ours ? (h->inj_mask | J3D_INJ_ENV)
+                                   : (h->inj_mask & ~J3D_INJ_ENV);
             }
             continue;
         }
@@ -3741,10 +3959,13 @@ static void j3d_rframe_refresh(CPUState* state)
              * (in-painter viewCalc) means it was overwritten: clear the flag
              * and observe what it left. */
             if (h->scratch_draw &&
-                memcmp(s_tmp_mtx, h->scratch_draw, (size_t)dn * J3D_MTX_BYTES) == 0)
+                memcmp(s_tmp_mtx, h->scratch_draw, (size_t)dn * J3D_MTX_BYTES) == 0) {
+                h->inj_mask |= J3D_INJ_DRAW;   /* live still holds our lerp */
                 continue;
+            }
             h->injected = 0;
         }
+        h->inj_mask &= ~J3D_INJ_DRAW;   /* observed or matched — live==curr */
         if (memcmp(s_tmp_mtx, h->curr_draw, (size_t)dn * J3D_MTX_BYTES) != 0)
             hist_rotate(h->prev_draw, h->curr_draw, s_tmp_mtx, dn,
                         &h->has_prev_draw, &h->dirty_draw, &h->teleported);
@@ -3771,21 +3992,34 @@ static void j3d_apply_pose(CPUState* state, float alpha)
         if (s_model_alive && !j3d_model_alive(state, h)) { j3d_slot_reset(h); continue; }
         if (h->flags_f0 == 0x20u) {
             if (!(h->has_prev && h->dirty)) continue;
-            uint32_t did = 0;
+            uint32_t ran = 0, wr = 0;
             if (h->joint_num && h->prev && h->curr && h->scratch && J3D_IN_MEM1(h->node_ptr)) {
-                j3d_lerp_mtx(h->prev, h->curr, alpha, h->scratch, h->joint_num);
-                write_mtx_arr(state, h->node_ptr, h->scratch, h->joint_num);
-                did += h->joint_num;
+                /* Sparse install (MODERNGEKKO_F60_SPARSE_WR): lerp into the
+                 * staging buffer, write only the 48B matrices that differ
+                 * from what the array already holds (inj_mask says scratch
+                 * on consecutive R-frames, curr otherwise), then publish the
+                 * full lerp into scratch so live==scratch bitwise — the
+                 * refresh/restore ours-checks keep working byte-exactly. */
+                j3d_lerp_mtx(h->prev, h->curr, alpha, s_tmp_mtx, h->joint_num);
+                const J3DMtx* ref = (h->inj_mask & J3D_INJ_NODE) ? h->scratch : h->curr;
+                wr += write_mtx_arr_diff(state, h->node_ptr, s_tmp_mtx, ref, h->joint_num);
+                memcpy(h->scratch, s_tmp_mtx, (size_t)h->joint_num * J3D_MTX_BYTES);
+                h->inj_mask |= J3D_INJ_NODE;
+                ran = 1;
             }
             /* has_prev_env required: the env pair seeds on its first real
              * observation — without the gate an unseeded (uninitialized)
              * env buffer would be lerped into a live array. */
             if (h->wEvlp_num && h->has_prev_env && h->prev_env && h->curr_env && h->scratch_env && J3D_IN_MEM1(h->env_ptr)) {
-                j3d_lerp_mtx(h->prev_env, h->curr_env, alpha, h->scratch_env, h->wEvlp_num);
-                write_mtx_arr(state, h->env_ptr, h->scratch_env, h->wEvlp_num);
-                did += h->wEvlp_num;
+                j3d_lerp_mtx(h->prev_env, h->curr_env, alpha, s_tmp_mtx, h->wEvlp_num);
+                const J3DMtx* ref = (h->inj_mask & J3D_INJ_ENV) ? h->scratch_env : h->curr_env;
+                wr += write_mtx_arr_diff(state, h->env_ptr, s_tmp_mtx, ref, h->wEvlp_num);
+                memcpy(h->scratch_env, s_tmp_mtx, (size_t)h->wEvlp_num * J3D_MTX_BYTES);
+                h->inj_mask |= J3D_INJ_ENV;
+                ran = 1;
             }
-            if (did) { ++s_inj_models; s_inj_writes += did; h->injected = 1; s_matrices_injected = 1; }
+            if (ran) { ++s_inj_models; s_inj_writes += wr; h->injected = 1;
+                       s_matrices_injected = 1; ++h->lg_inj; h->lg_injb += wr; }
         } else {
             if (!(h->has_prev_draw && h->dirty_draw)) continue;
             if (!h->prev_draw || !h->curr_draw || !h->scratch_draw || !h->draw_mtx_num) continue;
@@ -3807,10 +4041,15 @@ static void j3d_apply_pose(CPUState* state, float alpha)
                 h->draw_buf1 = buf1;
             }
             if (!J3D_IN_MEM1(arr)) continue;
-            j3d_lerp_mtx(h->prev_draw, h->curr_draw, alpha, h->scratch_draw, h->draw_mtx_num);
-            write_mtx_arr(state, arr, h->scratch_draw, h->draw_mtx_num);
-            ++s_inj_models; s_inj_writes += h->draw_mtx_num;
+            j3d_lerp_mtx(h->prev_draw, h->curr_draw, alpha, s_tmp_mtx, h->draw_mtx_num);
+            const J3DMtx* ref = (h->inj_mask & J3D_INJ_DRAW) ? h->scratch_draw : h->curr_draw;
+            const uint32_t wr =
+                write_mtx_arr_diff(state, arr, s_tmp_mtx, ref, h->draw_mtx_num);
+            memcpy(h->scratch_draw, s_tmp_mtx, (size_t)h->draw_mtx_num * J3D_MTX_BYTES);
+            h->inj_mask |= J3D_INJ_DRAW;
+            ++s_inj_models; s_inj_writes += wr;
             h->injected = 1; s_matrices_injected = 1;
+            ++h->lg_inj; h->lg_injb += wr;
         }
     }
 }
@@ -3834,22 +4073,28 @@ static void j3d_restore_injected(CPUState* state)
         J3DHistory* h = &s_hist[i];
         if (!h->used || !h->injected) continue;
         h->injected = 0;
+        h->inj_mask = 0;   /* after this pass nothing of ours is live */
         if (!h->model_data) continue;
         if (s_model_alive && !j3d_model_alive(state, h)) { j3d_slot_reset(h); continue; }
         if (h->flags_f0 == 0x20u) {
             if (h->joint_num && h->curr && h->scratch && J3D_IN_MEM1(h->node_ptr)) {
                 read_mtx_arr(state, h->node_ptr, s_tmp_mtx, h->joint_num);
                 if (memcmp(s_tmp_mtx, h->scratch, (size_t)h->joint_num * J3D_MTX_BYTES) == 0) {
-                    write_mtx_arr(state, h->node_ptr, h->curr, h->joint_num);
-                    ++s_rest_models; s_rest_writes += h->joint_num;
+                    /* live==scratch proven — only the lerped blocks differ */
+                    s_rest_writes +=
+                        write_mtx_arr_diff(state, h->node_ptr, h->curr,
+                                           h->scratch, h->joint_num);
+                    ++s_rest_models;
                 }
             }
             if (h->wEvlp_num && h->has_prev_env && h->curr_env && h->scratch_env &&
                 J3D_IN_MEM1(h->env_ptr)) {
                 read_mtx_arr(state, h->env_ptr, s_tmp_mtx, h->wEvlp_num);
                 if (memcmp(s_tmp_mtx, h->scratch_env, (size_t)h->wEvlp_num * J3D_MTX_BYTES) == 0) {
-                    write_mtx_arr(state, h->env_ptr, h->curr_env, h->wEvlp_num);
-                    ++s_rest_models; s_rest_writes += h->wEvlp_num;
+                    s_rest_writes +=
+                        write_mtx_arr_diff(state, h->env_ptr, h->curr_env,
+                                           h->scratch_env, h->wEvlp_num);
+                    ++s_rest_models;
                 }
             }
         } else if (h->has_prev_draw && h->curr_draw && h->scratch_draw && h->draw_mtx_num) {
@@ -3864,8 +4109,10 @@ static void j3d_restore_injected(CPUState* state)
             if (J3D_IN_MEM1(arr)) {
                 read_mtx_arr(state, arr, s_tmp_mtx, h->draw_mtx_num);
                 if (memcmp(s_tmp_mtx, h->scratch_draw, (size_t)h->draw_mtx_num * J3D_MTX_BYTES) == 0) {
-                    write_mtx_arr(state, arr, h->curr_draw, h->draw_mtx_num);
-                    ++s_rest_models; s_rest_writes += h->draw_mtx_num;
+                    s_rest_writes +=
+                        write_mtx_arr_diff(state, arr, h->curr_draw,
+                                           h->scratch_draw, h->draw_mtx_num);
+                    ++s_rest_models;
                 }
             }
         }
@@ -4613,6 +4860,9 @@ static void f60_reset_runtime_state(CPUState* st)
     s_first = 0;
     s_jfw_display = 0;
     s_overlap_active = 0;
+    s_ovlp_peek = 0;
+    s_ovlp_phase = 0;
+    s_ovlp_peek_dbg = 0;
     s_r_dup = 0;
     s_cam_injected = 0;
     s_cam_cut = 0;
@@ -4702,6 +4952,8 @@ static void f60_reset_runtime_state(CPUState* st)
     s_dbg_np = s_dbg_nc = 0;
     s_dbg_purged = 0;
     s_dbg_ovr_dup = s_dbg_w0_dup = s_dbg_camcut = s_dbg_caminj = 0;
+    s_dbg_ovr_rep = 0;
+    s_mdllog_l = 0;
     s_dbg_lightgate = 0;
     s_dbg_gp_dup = s_dbg_wnum_dup = s_dbg_cap_dup = 0;
     s_dbg_lightfix = s_dbg_lightbad = 0;
@@ -4721,6 +4973,10 @@ static void f60_reset_runtime_state(CPUState* st)
     else
         s_list_heap = 0;
 }
+
+/* budget constants for TB-14 (kept for harness documentation; unreferenced) */
+static const uint32_t J3D_BUDGET_TYPICAL_KIB __attribute__((unused)) = 140; /* 1500*96≈144000 ≈140.6 rounded */
+static const uint32_t J3D_BUDGET_HEAVY_KIB  __attribute__((unused)) = 300;   /* 3200*96=307200 */
 
 /* Optional: export to let a future 60Hz-logic sweep (Option C) query
  * whether this frame is logic or render-only, or to let QA sample

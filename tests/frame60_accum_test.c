@@ -1182,22 +1182,35 @@ int main(void)
         s_libm_fast = 1u;
     }
 
-    /* ==== overlap -> cadence kept, R-frames dup ==========================
+    /* ==== overlap -> cadence kept, phase-aware R-frame gate ===============
      * delta = TICK/4 -> pattern L R R R L R R R ... (acc ticks every 4th).
      * The overlap guard keeps cadence and steers R-frames to the dup
-     * tail-call even in render+interp mode. */
+     * tail-call even in render+interp mode — but (characters lane) only in
+     * the request's TEARDOWN phases (mPhs.id >= 4: IsWaitOfFadeout/IsDone/
+     * Done — the scene-swap boundary). Phases 0-3 — task creation plus the
+     * WaitOfFadeout peek window where the task draws the old scene under
+     * the cover — repaint: the scene is alive and on-screen. */
     {
         const uint32_t disp = 0x80000100u;
+        const uint32_t req = 0x80003000u;   /* fake overlap_request_class */
         s_enabled = 1u; s_split_mode = 0u; s_first = 0u; s_acc = 0u;
         s_logic_this_frame = 1u;
         s_rframe_render = 1u; s_j3d_interp = 1u; s_fifo_replay = 0u;
         s_painter_skip_off = 0u; s_cam_interp = 1u;
+        s_ovlp_gate_peek = 1u;
+        s_auto_degrade = 0u;   /* governor is another lane's knob — off here */
+        s_gp_gate = 0u;
         store_be32(&s_memory[JFW_SINGLETON - 0x80000000u], disp);
         store_be32(&s_memory[disp + JFW_OFF_TICKRATE - 0x80000000u], (uint32_t)TICK_30FPS);
         store_be32(&s_memory[disp + JFW_OFF_TICKDELTA - 0x80000000u],
                    (uint32_t)(TICK_30FPS / 4u));
-        /* overlap flag ON */
-        store_be32(&s_memory[0x803F6160u - 0x80000000u], 1u);
+        s_memory[GAMEINFO_WNUM - 0x80000000u] = 1u;            /* windowed scene (u8) */
+        store_be16(&s_memory[GINF_MCAPTURESTEP - 0x80000000u], 0u);
+        /* overlap request alive in a scene-live phase: Create(id=0),
+         * peek off — repaint. */
+        store_be32(&s_memory[0x803F6160u - 0x80000000u], req);
+        store_be32(&s_memory[req + 0x08u - 0x80000000u], 0u);  /* mIsPeek */
+        store_be32(&s_memory[req + 0x1Cu - 0x80000000u], 0u);  /* mPhs.id  */
 
         uint32_t l_n = 0, r_n = 0, dup_n = 0, rep_n = 0;
         for (int i = 0; i < 8; ++i)
@@ -1211,15 +1224,87 @@ int main(void)
                 else ++rep_n;
             }
         }
-        /* cadence kept (l_n==2, r_n==6) and every R dups. */
+        /* cadence kept (l_n==2, r_n==6) and every R repaints. */
         if (l_n != 2u || r_n != 6u)
             return 101;
-        if (dup_n != 6u || rep_n != 0u)
+        if (dup_n != 0u || rep_n != 6u)
             return 102;
-        if (s_dbg_ovr_dup != 6u)
+        if (s_dbg_ovr_rep != 6u)
             return 103;
-        if (!s_overlap_active)
+        if (!s_overlap_active || s_ovlp_peek || s_ovlp_phase != 0u)
             return 104;
+
+        /* Peek window: WaitOfFadeout (id=3, mIsPeek=1) — the task draws
+         * the old scene under the cover -> repaint, not dup. */
+        store_be32(&s_memory[req + 0x08u - 0x80000000u], 1u);
+        store_be32(&s_memory[req + 0x1Cu - 0x80000000u], 3u);
+        rep_n = 0; dup_n = 0;
+        for (int i = 0; i < 8; ++i)
+        {
+            state.pc = 0x8000AF2Cu; state.gpr[3] = 0xDEADBEEFu;
+            on_painter_skip(&state);
+            if (!s_logic_this_frame)
+            {
+                if (state.pc == JFW_BEGIN_RENDER) ++dup_n; else ++rep_n;
+            }
+        }
+        if (dup_n != 0u || rep_n != 6u)
+            return 1022;
+        if (!s_overlap_active || !s_ovlp_peek || s_ovlp_phase != 3u)
+            return 1023;
+
+        /* Teardown boundary: IsWaitOfFadeout/IsDone/Done (id=4..6) ->
+         * dup regardless of the peek bit. */
+        store_be32(&s_memory[req + 0x08u - 0x80000000u], 0u);
+        store_be32(&s_memory[req + 0x1Cu - 0x80000000u], 4u);
+        rep_n = 0; dup_n = 0;
+        for (int i = 0; i < 8; ++i)
+        {
+            state.pc = 0x8000AF2Cu; state.gpr[3] = 0xDEADBEEFu;
+            on_painter_skip(&state);
+            if (!s_logic_this_frame)
+            {
+                if (state.pc == JFW_BEGIN_RENDER) ++dup_n; else ++rep_n;
+            }
+        }
+        if (dup_n != 6u || rep_n != 0u)
+            return 1024;
+        if (s_dbg_ovr_dup < 6u)
+            return 1026;
+
+        /* Kill switch MODERNGEKKO_F60_OVLP_PEEK=0 restores the flat
+         * whole-request dup gate even in a scene-live phase. */
+        store_be32(&s_memory[req + 0x1Cu - 0x80000000u], 0u);
+        s_ovlp_gate_peek = 0u;
+        dup_n = rep_n = 0;
+        for (int i = 0; i < 8; ++i)
+        {
+            state.pc = 0x8000AF2Cu; state.gpr[3] = 0xDEADBEEFu;
+            on_painter_skip(&state);
+            if (!s_logic_this_frame)
+            {
+                if (state.pc == JFW_BEGIN_RENDER) ++dup_n; else ++rep_n;
+            }
+        }
+        s_ovlp_gate_peek = 1u;
+        if (dup_n != 6u || rep_n != 0u)
+            return 1025;
+
+        /* Nonzero request pointer that cannot be read (outside MEM1):
+         * "can't prove safe" -> conservatively dup. */
+        store_be32(&s_memory[0x803F6160u - 0x80000000u], 0x90000000u);
+        dup_n = rep_n = 0;
+        for (int i = 0; i < 8; ++i)
+        {
+            state.pc = 0x8000AF2Cu; state.gpr[3] = 0xDEADBEEFu;
+            on_painter_skip(&state);
+            if (!s_logic_this_frame)
+            {
+                if (state.pc == JFW_BEGIN_RENDER) ++dup_n; else ++rep_n;
+            }
+        }
+        if (dup_n != 6u || rep_n != 0u)
+            return 1027;
 
         /* overlap clears -> R-frames go back to the repaint path (no dup). */
         store_be32(&s_memory[0x803F6160u - 0x80000000u], 0u);
@@ -1239,6 +1324,129 @@ int main(void)
             return 106;
 
         s_rframe_render = 0u; s_j3d_interp = 0u;
+        s_auto_degrade = 1u;
+        s_dbg_ovr_rep = 0u;
+    }
+
+    /* ==== exact-dirty gate (characters lane) =============================
+     * The 0.02f dead-zone must no longer swallow sub-threshold motion:
+     * identical endpoints stay a no-op; a 0.001 delta sets dirty under
+     * MODERNGEKKO_F60_DIRTY_EXACT=1 and stays clean under =0 (legacy). */
+    {
+        const uint32_t gmdl = 0x80280000u;
+        s_j3d_interp = 1u; s_dirty_exact = 1u;
+        J3DHistory* h = j3d_history_ensure(gmdl, 2u, 0u, 0);
+        if (!h)
+            return 1070;
+        J3DMtx a[2], b[2];
+        memset(a, 0, sizeof(a)); memset(b, 0, sizeof(b));
+        a[0].m[0][0] = 1.0f; a[0].m[1][1] = 1.0f; a[0].m[2][2] = 1.0f;
+        a[1].m[0][0] = 1.0f; a[1].m[1][1] = 1.0f; a[1].m[2][2] = 1.0f;
+        memcpy(b, a, sizeof(a));
+        if (!j3d_history_rotate(gmdl, a, 2u) || !h->has_prev)
+            return 1071;                         /* seed */
+        b[0].m[0][3] = a[0].m[0][3] + 0.001f;    /* 1 mm root move, < 0.02 */
+        if (!j3d_history_rotate(gmdl, b, 2u) || !h->dirty)
+            return 1072;                         /* exact: sub-dead-zone counts */
+        /* identical endpoints -> no-op */
+        if (!j3d_history_rotate(gmdl, b, 2u) || h->dirty)
+            return 1073;
+        /* legacy dead-zone switch restores the skip */
+        s_dirty_exact = 0u;
+        b[0].m[0][3] += 0.001f;                  /* again < 0.02 */
+        if (!j3d_history_rotate(gmdl, b, 2u) || h->dirty)
+            return 1074;
+        s_dirty_exact = 1u;
+        /* teleport reseed still snaps instead of smearing */
+        b[0].m[0][3] += 600.0f;                  /* > 400 axis / > 500 L1 */
+        if (!j3d_history_rotate(gmdl, b, 2u))
+            return 1075;
+        if (!h->teleported || h->dirty)
+            return 1076;
+        if (memcmp(h->prev, h->curr, sizeof(a)) != 0 ||
+            memcmp(h->curr, b, sizeof(a)) != 0)
+            return 1077;                         /* pair collapsed to the new pose */
+        /* post-teleport small delta -> dirty again (reseeded pair) */
+        b[0].m[0][3] += 0.001f;
+        if (!j3d_history_rotate(gmdl, b, 2u) || h->teleported || !h->dirty)
+            return 1078;
+        j3d_history_free(gmdl);
+    }
+
+    /* ==== sparse matrix writes (characters lane) =========================
+     * j3d_apply_pose must install lerp(prev,curr,alpha) while touching only
+     * the 48B matrices that differ from what the live array already holds
+     * (inj_mask selects scratch on consecutive R, curr otherwise). Canary
+     * bytes planted inside a skipped block survive; a written block holds
+     * the lerp bytes exactly. */
+    {
+        const uint32_t mdl = 0x80200000u, node = 0x80210000u;
+        const uint32_t md = 0x80220000u;
+        s_j3d_interp = 1u; s_model_alive = 0u; s_sparse_wr = 1u;
+        s_draw_gen = 0u;
+        J3DHistory* h = j3d_history_ensure(mdl, 2u, 0u, 0);
+        if (!h || !h->prev || !h->curr || !h->scratch)
+            return 1080;
+        h->model_data = md;
+        h->flags_f0 = 0x20u;
+        h->node_ptr = node;
+        /* joint 0: prev==curr (didn't move); joint 1: moved. */
+        memset(&h->prev[0], 0, sizeof(J3DMtx)); memset(&h->curr[0], 0, sizeof(J3DMtx));
+        h->prev[0].m[0][0] = 2.0f; h->curr[0].m[0][0] = 2.0f;
+        memset(&h->prev[1], 0, sizeof(J3DMtx)); memset(&h->curr[1], 0, sizeof(J3DMtx));
+        h->prev[1].m[0][3] = 0.0f; h->curr[1].m[0][3] = 4.0f;
+        h->has_prev = 1u; h->dirty = 1u; h->teleported = 0u;
+        h->injected = 0u; h->inj_mask = 0u;
+        /* live array = curr (the refresh-established invariant). Canary at
+         * +0x18 sits inside joint 0's block (m[1][2], value 0.0). */
+        write_mtx_arr(&state, node, h->curr, 2u);
+        s_memory[node + 0x18u - 0x80000000u] = 0x5Au;
+        j3d_apply_pose(&state, 0.5f);
+        if (!(h->inj_mask & J3D_INJ_NODE) || !h->injected)
+            return 1081;
+        if (s_memory[node + 0x18u - 0x80000000u] != 0x5Au)
+            return 1082;                         /* canary: joint 0 was written */
+        if (be_f32(&s_memory[node + 48u + 0x0Cu - 0x80000000u]) != 2.0f)
+            return 1083;                         /* joint 1: lerp(0,4,0.5) */
+        if (h->scratch[1].m[0][3] != 2.0f)
+            return 1084;                         /* scratch mirrors the lerp   */
+
+        /* Second consecutive R at a different alpha: ref=scratch (mask set)
+         * — the moved joint rewrites to the new midpoint, the static block
+         * still skips. */
+        j3d_apply_pose(&state, 0.75f);
+        if (be_f32(&s_memory[node + 48u + 0x0Cu - 0x80000000u]) != 3.0f)
+            return 1085;
+        if (s_memory[node + 0x18u - 0x80000000u] != 0x5Au)
+            return 1086;
+
+        /* Restore (camera-cut path) puts the curr endpoint back — sparse or
+         * full, the bytes must equal curr exactly afterwards. */
+        write_mtx_arr(&state, node, h->scratch, 2u); /* make live==scratch */
+        j3d_restore_injected(&state);
+        {
+            J3DMtx live[2];
+            read_mtx_arr(&state, node, live, 2u);
+            if (memcmp(live, h->curr, sizeof(live)) != 0)
+                return 1087;
+        }
+        if (h->inj_mask || h->injected)
+            return 1088;
+
+        /* Kill switch: SPARSE_WR=0 restores whole-array writes — the static
+         * joint's block is written too (canary dies, curr bytes land). */
+        h->has_prev = 1u; h->dirty = 1u; h->injected = 0u; h->inj_mask = 0u;
+        s_sparse_wr = 0u;
+        write_mtx_arr(&state, node, h->curr, 2u);
+        s_memory[node + 0x18u - 0x80000000u] = 0x5Au;
+        j3d_apply_pose(&state, 0.5f);
+        s_sparse_wr = 1u;
+        if (s_memory[node + 0x18u - 0x80000000u] != 0x00u)
+            return 1089;                         /* full write overwrote canary */
+        if (be_f32(&s_memory[node + 48u + 0x0Cu - 0x80000000u]) != 2.0f)
+            return 1090;
+        j3d_history_free(mdl);
+        s_model_alive = 1u;
     }
 
     /* ==== camera view lerp install + restore =============================
@@ -1956,7 +2164,7 @@ int main(void)
         s_fol_grass.armed = 1u; s_fol_grass.self = 0x80123456u;
         s_jpa[0].addr = 0x80320000u; s_jpa[0].injected = 1u;
         s_trace_prev_drawn = 5;
-        s_overlap_active = 1u; s_r_dup = 1u;
+        s_overlap_active = 1u; s_ovlp_peek = 1u; s_ovlp_phase = 4u; s_r_dup = 1u;
         /* Disengage edge must clear them all. */
         s_split_mode = 1u;
         store_be32(&s_memory[display + JFW_OFF_TICKRATE - 0x80000000u], 450000u);
@@ -1978,7 +2186,7 @@ int main(void)
         if (s_fol_cut || s_fol_grass.armed || s_fol_grass.self) return 289;
         if (s_jpa[0].addr || s_jpa[0].injected) return 290;
         if (s_trace_prev_drawn != -2) return 291;
-        if (s_overlap_active || s_r_dup || s_split_mode) return 292;
+        if (s_overlap_active || s_ovlp_peek || s_ovlp_phase || s_r_dup || s_split_mode) return 292;
         if (s_list_heap != (s_memory[GINF_MCURRHEAP - 0x80000000u] & 1u))
             return 293;
 

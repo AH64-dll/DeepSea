@@ -40,6 +40,7 @@ struct J3DHistory {
 static J3DHistory s_hist[J3D_MAX_MODELS];
 static uint32_t s_hist_gen = 1;
 static uint32_t s_j3d_interp_enabled = 1; // force ON for TB harness (real mod default OFF)
+static uint32_t s_dirty_exact = 1; // mirrors mod.c MODERNGEKKO_F60_DIRTY_EXACT default
 
 static J3DHistory* j3d_find(uint32_t p) {
   for (uint32_t i = 0; i < J3D_MAX_MODELS; ++i) if (s_hist[i].used && s_hist[i].guest_model_ptr == p) return &s_hist[i];
@@ -110,7 +111,10 @@ static int j3d_history_rotate(uint32_t guest_ptr,const J3DMtx* new_mtx,uint32_t 
   float dx=new_mtx[0].m[0][3]-h->curr[0].m[0][3]; float dy=new_mtx[0].m[1][3]-h->curr[0].m[1][3]; float dz=new_mtx[0].m[2][3]-h->curr[0].m[2][3]; float ax=dx<0?-dx:dx,ay=dy<0?-dy:dy,az=dz<0?-dz:dz; float hypot=ax+ay+az; int is_teleport=(ax>400||ay>400||az>400||hypot>500)?1:0;
   if(is_teleport){ memcpy(h->curr,new_mtx,(size_t)n*J3D_MTX_BYTES); memcpy(h->prev,h->curr,(size_t)n*J3D_MTX_BYTES); if(h->wEvlp_num&&h->curr_env) memcpy(h->curr_env,new_mtx,(size_t)env_src_n*J3D_MTX_BYTES); if(h->wEvlp_num&&h->prev_env&&h->curr_env) memcpy(h->prev_env,h->curr_env,(size_t)h->wEvlp_num*J3D_MTX_BYTES); h->teleported=1; h->dirty=0; return 1; }
   memcpy(h->prev,h->curr,(size_t)n*J3D_MTX_BYTES); if(h->wEvlp_num&&h->prev_env&&h->curr_env) memcpy(h->prev_env,h->curr_env,(size_t)h->wEvlp_num*J3D_MTX_BYTES); memcpy(h->curr,new_mtx,(size_t)n*J3D_MTX_BYTES); if(h->wEvlp_num&&h->curr_env) memcpy(h->curr_env,new_mtx,(size_t)env_src_n*J3D_MTX_BYTES);
-  const float eps=0.02f; int dirty=0; for(uint32_t j=0;j<n&&!dirty;++j) for(int r=0;r<3&&!dirty;++r) for(int c=0;c<4;++c){ float d=new_mtx[j].m[r][c]-h->prev[j].m[r][c]; if(d<0)d=-d; if(d>eps){dirty=1;break;}}
+  /* dirty iff any endpoint element changed — mirrors mod.c hist_rotate:
+   * exact compare under DIRTY_EXACT (shipped), the legacy 0.02f dead-zone
+   * under the =0 kill switch. */
+  const float eps=s_dirty_exact?0.0f:0.02f; int dirty=0; for(uint32_t j=0;j<n&&!dirty;++j) for(int r=0;r<3&&!dirty;++r) for(int c=0;c<4;++c){ float d=new_mtx[j].m[r][c]-h->prev[j].m[r][c]; if(d<0)d=-d; if(d>eps){dirty=1;break;}}
   h->dirty=dirty?1u:0u; h->teleported=0; return 1;
 }
 static int j3d_should_lerp(J3DHistory* h,float alpha){ if(!h||!h->has_prev||h->no_interp||h->teleported||!h->dirty) return 0; if(alpha<=0||alpha>=1) return 0; return 1; }
@@ -183,6 +187,26 @@ int main(){
     j3d_history_rotate(0x4000,cur,4);
     check(h->dirty==0,"TB-8 history_dirty_false_when_static","dirty false on same");
   }
+  // TB-8b sub-dead-zone motion counts under DIRTY_EXACT (characters lane)
+  {
+    auto* h=j3d_find(0x4000);
+    J3DMtx small[4]; memcpy(small,h->curr,4*48);
+    small[0].m[0][3]+=0.001f;   // below the legacy 0.02 dead-zone
+    j3d_history_rotate(0x4000,small,4);
+    check(h->dirty==1,"TB-8b history_dirty_exact_subthreshold","dirty true for 0.001 move");
+    // identical endpoints -> no-op again
+    j3d_history_rotate(0x4000,small,4);
+    check(h->dirty==0,"TB-8b history_dirty_exact_static","identical endpoints no-op");
+    // legacy dead-zone switch restores the skip
+    s_dirty_exact=0;
+    small[0].m[0][3]+=0.001f;
+    j3d_history_rotate(0x4000,small,4);
+    check(h->dirty==0,"TB-8b history_dirty_legacy_deadzone","0.02 gate still available");
+    s_dirty_exact=1;
+    // restore a clean dirty for the following teleport cases
+    small[0].m[0][3]+=10.0f;
+    j3d_history_rotate(0x4000,small,4);
+  }
   // TB-9 teleport suppress
   {
     auto* h=j3d_history_ensure(0x5000,4,0,0);
@@ -214,14 +238,6 @@ int main(){
   }
   // TB-12 passthrough gates (6 subcases)
   {
-    struct Case{const char* n; bool setup;};
-    auto test_gate=[&](uint32_t ptr,float alpha,int expect,bool isCpuSkinning){
-      (void)isCpuSkinning;
-      J3DHistory* h=j3d_find(ptr);
-      int should=j3d_should_lerp(h,alpha);
-      if(isCpuSkinning) should=0; // gate 6
-      return should==expect;
-    };
     auto* h=j3d_history_ensure(0x7000,4,0,0);
     J3DMtx P[4]={}, C[4]={}; C[0].m[0][3]=10;
     memcpy(h->prev,P,4*48); memcpy(h->curr,C,4*48); h->has_prev=1; h->dirty=1; h->teleported=0; h->no_interp=0;
