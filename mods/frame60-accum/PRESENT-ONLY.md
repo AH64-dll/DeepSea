@@ -484,7 +484,7 @@ throttle catch-up above 1.0x. Dropping R-frames cures only the first, and
 the median ignores the second. (The first live run averaged instead and
 tripped on a cold shader cache.)
 
-- It degrades after two consecutive windows whose median is below 0.90x. R-frames then take
+- It degrades after two consecutive windows whose median is below 0.95x. R-frames then take
   the duplicate-present path, the same one the overlap guard uses, and
   logic cadence is untouched. The game shows 30 fps at full speed.
 - It retries interpolation after a hold of 15 s. Each failed retry doubles
