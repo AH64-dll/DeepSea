@@ -11,3 +11,4 @@
 # Python bytecode (mod audit tools)
 __pycache__/
 *.pyc
+out/

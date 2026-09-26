@@ -2851,5 +2851,245 @@ int main(void)
         s_logic_this_frame = 1u;
     }
 
+    /* ==== TEXANIM: differed-DL payload lerp =================================
+     * Fake a J3DMatPacket -> mpInitShapePacket -> mpDisplayListObj chain and
+     * the sGDLObj emission state endDiff sees. Emissions land in alternating
+     * DL buffers exactly like beginDL's swap; on_end_diff records the slot
+     * payloads, texanim_rframe writes the R lerp, texanim_restore puts the
+     * curr bytes back. */
+    {
+        const uint32_t PKT = 0x80390000u, ISP = 0x80390100u;
+        const uint32_t DLO = 0x80390200u;
+        const uint32_t BUFA = 0x803A0000u, BUFB = 0x803A2000u;
+        const uint32_t CAP = 0x1000u;
+        uint32_t bufpos;
+        s_texanim = 1u;
+
+        /* J3DMatPacket+0x24 -> isp; J3DShapePacket+0x20 -> dlobj
+         * (real GZLE01 offsets — decomp header comments run +4). */
+        store_be32(&s_memory[PKT + MATPKT_OFF_INITSHAPE - 0x80000000u], ISP);
+        store_be32(&s_memory[ISP + SHPPKT_OFF_DLOBJ - 0x80000000u], DLO);
+        store_be32(&s_memory[DLO + DLOBJ_OFF_DATA0 - 0x80000000u], BUFA);
+        store_be32(&s_memory[DLO + DLOBJ_OFF_CAPACITY - 0x80000000u], CAP);
+        /* __GDCurrentDL = &sGDLObj */
+        store_be32(&s_memory[GDCURRENT_EA - 0x80000000u], GDLOBJ_EA);
+
+        /* ---- helpers: emit one differed-DL image into `buf` ------------
+         * Layout (mirrors J3DMaterial::diff emission):
+         *   TEV quad (4xBP: e0/e1/e1/e1)              20 B
+         *   KCOL pair (2xBP: e2/e3 w/ bit23)          10 B
+         *   teximage BP cmd (BTP target — untracked)   5 B
+         *   XF matcolor (0x100C, 2 RGBA)              13 B
+         *   XF texmtx0 2x4 (0x78, 8 f32)              37 B
+         *   XF texmtx1 3x4 (0x84, 12 f32)             53 B
+         *   trailing NOP pad                           1 B                 */
+#define TA_EMIT(buf, tev_v, kcol_v, mc_v, tx3, tx7, m3_v) do {             \
+            uint8_t* q = &s_memory[(buf) - 0x80000000u];                   \
+            bufpos = 0;                                                  \
+            /* TEV quad: w0 = r|a<<12|e0<<24; w1 = b|g<<12|e1<<24 (x3) */  \
+            q[bufpos] = 0x61u; store_be32(q + bufpos + 1,                 \
+                ((tev_v) & 0x7FFu) | (((tev_v) & 0x7FFu) << 12) |        \
+                (0xE0u << 24)); bufpos += 5;                             \
+            q[bufpos] = 0x61u; store_be32(q + bufpos + 1,                 \
+                ((tev_v) & 0x7FFu) | (((tev_v) & 0x7FFu) << 12) |        \
+                (0xE1u << 24)); bufpos += 5;                             \
+            q[bufpos] = 0x61u; store_be32(q + bufpos + 1,                 \
+                ((tev_v) & 0x7FFu) | (((tev_v) & 0x7FFu) << 12) |        \
+                (0xE1u << 24)); bufpos += 5;                             \
+            q[bufpos] = 0x61u; store_be32(q + bufpos + 1,                 \
+                ((tev_v) & 0x7FFu) | (((tev_v) & 0x7FFu) << 12) |        \
+                (0xE1u << 24)); bufpos += 5;                             \
+            /* KCOL pair: r|a<<12|1<<23|e2<<24 ; b|g<<12|1<<23|e3<<24 */  \
+            q[bufpos] = 0x61u; store_be32(q + bufpos + 1,                 \
+                (kcol_v) | ((kcol_v) << 12) | (1u << 23) |              \
+                (0xE2u << 24)); bufpos += 5;                             \
+            q[bufpos] = 0x61u; store_be32(q + bufpos + 1,                 \
+                (kcol_v) | ((kcol_v) << 12) | (1u << 23) |              \
+                (0xE3u << 24)); bufpos += 5;                             \
+            /* BTP-style teximage BP (reg 0x88 — untracked reg) */        \
+            q[bufpos] = 0x61u; store_be32(q + bufpos + 1,                 \
+                0xAABBCCDDu | (0x88u << 24)); bufpos += 5;                \
+            /* XF matcolor: 0x100C + 2 RGBA words */                      \
+            q[bufpos] = 0x10u; q[bufpos+1]=0; q[bufpos+2]=1;             \
+            q[bufpos+3]=0x10u; q[bufpos+4]=0x0Cu; bufpos += 5;           \
+            store_be32(q + bufpos, (mc_v)); bufpos += 4;                 \
+            store_be32(q + bufpos, (mc_v)); bufpos += 4;                 \
+            /* XF texmtx0: 2x4, cmd 0x78, 8 f32 — tx3->elem3, tx7->elem7 */\
+            q[bufpos] = 0x10u; q[bufpos+1]=0; q[bufpos+2]=7;             \
+            q[bufpos+3]=0; q[bufpos+4]=0x78u; bufpos += 5;               \
+            store_f32(q + bufpos + 0,  1.0f);                            \
+            store_f32(q + bufpos + 4,  0.0f);                            \
+            store_f32(q + bufpos + 8,  0.0f);                            \
+            store_f32(q + bufpos + 12, (tx3));                           \
+            store_f32(q + bufpos + 16, 0.0f);                            \
+            store_f32(q + bufpos + 20, 1.0f);                            \
+            store_f32(q + bufpos + 24, 0.0f);                            \
+            store_f32(q + bufpos + 28, (tx7));                           \
+            bufpos += 32;                                                \
+            /* XF texmtx1: 3x4, cmd 0x84, 12 f32 — m3_v at elem3 */        \
+            q[bufpos] = 0x10u; q[bufpos+1]=0; q[bufpos+2]=0x0Bu;         \
+            q[bufpos+3]=0; q[bufpos+4]=0x84u; bufpos += 5;               \
+            store_f32(q + bufpos + 0, 1.0f);                             \
+            store_f32(q + bufpos + 4, 0.0f);                             \
+            store_f32(q + bufpos + 8, 0.0f);                             \
+            store_f32(q + bufpos + 12, (m3_v));                          \
+            for (int zi = 4; zi < 12; ++zi)                             \
+                store_f32(q + bufpos + zi * 4, 0.0f);                    \
+            bufpos += 48;                                                \
+            q[bufpos++] = 0x00u;  /* NOP pad */                          \
+        } while (0)
+
+#define TA_SET_GDL(buf, esize) do {                                      \
+            store_be32(&s_memory[GDLOBJ_EA + GDLOBJ_OFF_START            \
+                - 0x80000000u], (buf));                                  \
+            store_be32(&s_memory[GDLOBJ_EA + GDLOBJ_OFF_PTR              \
+                - 0x80000000u], (buf) + (esize));                        \
+            store_be32(&s_memory[DLO + DLOBJ_OFF_DATA0                   \
+                - 0x80000000u], (buf));                                  \
+        } while (0)
+
+        /* slot offsets inside the emission (see layout above) */
+        const uint32_t OFF_TEV  = 0u;
+        const uint32_t OFF_KCOL = 20u;
+        const uint32_t OFF_TEXI = 30u;    /* teximage word (untracked)    */
+        const uint32_t OFF_MC   = 35u + 5u;   /* payload of 0x100C hdr    */
+        const uint32_t OFF_TX0  = 48u + 5u;   /* payload of 0x78 hdr      */
+        const uint32_t OFF_TX1  = 85u + 5u;   /* payload of 0x84 hdr      */
+        const uint32_t EMISSION = 139u;
+
+        /* --- L1: first emission in BUFA — rec + parse, no prev --- */
+        TA_EMIT(BUFA, 100u, 0x10u, 0x80403020u, 0.98f, 0.20f, 40.0f);
+        TA_SET_GDL(BUFA, EMISSION);
+        memset(s_ta, 0, sizeof(s_ta));
+        memset(s_ta_hash, 0, sizeof(s_ta_hash));
+        s_ta_n = 0; s_ta_gen = 0;
+        texanim_lframe(&state);
+        state.gpr[3] = PKT;
+        on_end_diff(&state);
+        if (s_ta_n != 1u) return 500;
+        if (s_ta[0].dlobj != DLO || s_ta[0].base != BUFA) return 501;
+        if (s_ta[0].nslots != 5u) return 502;   /* tev+kcol+mc+tx0+tx1      */
+        /* teximage must NOT have produced a slot (BTP stays discrete) */
+        if (s_ta[0].slots[0].has_prev || s_ta[0].slots[1].has_prev) return 503;
+        /* R1: no prev endpoints -> nothing patched */
+        texanim_rframe(&state, 0.5f);
+        if (s_ta[0].injected) return 504;
+        if (be_f32(&s_memory[BUFA + OFF_TX0 + 12u - 0x80000000u]) != 0.98f)
+            return 505;
+
+        /* --- L2: emission in BUFB (the normal double-buffer swap) --- */
+        TA_EMIT(BUFB, 200u, 0x30u, 0x4080FF00u, 0.02f, 0.26f, 44.0f);
+        TA_SET_GDL(BUFB, EMISSION);
+        texanim_lframe(&state);
+        state.gpr[3] = PKT;
+        on_end_diff(&state);
+        /* base changed but shape identical -> endpoints rotated, no reparse */
+        if (s_ta[0].base != BUFB || s_ta[0].nslots != 5u) return 506;
+        if (!s_ta[0].slots[0].has_prev || !s_ta[0].slots[4].has_prev) return 507;
+
+        /* --- R2: lerp(alpha=0.5) into the live buffer --- */
+        texanim_rframe(&state, 0.5f);
+        if (!s_ta[0].injected) return 508;
+        {
+            /* texmtx0 elem3: prev=0.98 curr=0.02 — a cyclic-track loop wrap:
+             * raw delta -0.96 unwraps to +0.04 -> lerp crosses the boundary
+             * forward at ~1.00, not backward through -0.96. */
+            const float e3 = be_f32(&s_memory[BUFB + OFF_TX0 + 12u - 0x80000000u]);
+            if (e3 < 0.98f || e3 > 1.02f) return 509;
+            /* texmtx0 elem7: plain lerp 0.20 -> 0.26 -> 0.23 */
+            const float e7 = be_f32(&s_memory[BUFB + OFF_TX0 + 28u - 0x80000000u]);
+            if (e7 < 0.22f || e7 > 0.24f) return 510;
+            /* texmtx1 (3x4): NO unwrap — 40->44 real view motion -> 42 */
+            const float m3 = be_f32(&s_memory[BUFB + OFF_TX1 + 12u - 0x80000000u]);
+            if (m3 < 41.9f || m3 > 42.1f) return 511;
+            /* TEV quad: s11 channel 100->200 -> 150 at every word */
+            const uint32_t t0w = load_be32(&s_memory[BUFB + OFF_TEV + 1u - 0x80000000u]);
+            if ((t0w & 0x7FFu) != 150u) return 512;
+            if (((t0w >> 12) & 0x7FFu) != 150u) return 513;
+            if ((t0w >> 24) != 0xE0u) return 514;   /* reg id preserved      */
+            const uint32_t t3w = load_be32(&s_memory[BUFB + OFF_TEV + 16u - 0x80000000u]);
+            if ((t3w >> 24) != 0xE1u || (t3w & 0x7FFu) != 150u) return 515;
+            /* KCOL pair: u8 0x10->0x30 -> 0x20, bit23 + reg ids kept */
+            const uint32_t k0w = load_be32(&s_memory[BUFB + OFF_KCOL + 1u - 0x80000000u]);
+            if ((k0w >> 24) != 0xE2u || !(k0w & (1u << 23))) return 516;
+            if ((k0w & 0xFFu) != 0x20u || ((k0w >> 12) & 0xFFu) != 0x20u)
+                return 517;
+            /* XF matcolor: two RGBA words lerped per channel */
+            const uint32_t mcw = load_be32(&s_memory[BUFB + OFF_MC - 0x80000000u]);
+            if ((mcw & 0xFF000000u) != 0x60000000u) return 518; /* 0x80->0x40 */
+            if ((mcw & 0xFFu) != 0x10u) return 519;              /* 0x20->0x00 */
+            /* the BTP teximage BP word is untouched */
+            if (load_be32(&s_memory[BUFB + OFF_TEXI + 1u - 0x80000000u]) !=
+                (0xAABBCCDDu | (0x88u << 24)))
+                return 520;
+        }
+
+        /* --- restore: live bytes return to curr exactly --- */
+        texanim_restore(&state);
+        if (s_ta[0].injected) return 521;
+        if (be_f32(&s_memory[BUFB + OFF_TX0 + 12u - 0x80000000u]) != 0.02f)
+            return 522;
+        if (be_f32(&s_memory[BUFB + OFF_TX0 + 28u - 0x80000000u]) != 0.26f)
+            return 523;
+        if (load_be32(&s_memory[BUFB + OFF_TEV + 1u - 0x80000000u]) !=
+            (((200u) & 0x7FFu) | (((200u) & 0x7FFu) << 12) | (0xE0u << 24)))
+            return 524;
+
+        /* --- L3: static emission -> no lerp write, stays clean --- */
+        TA_EMIT(BUFA, 200u, 0x30u, 0x4080FF00u, 0.02f, 0.26f, 44.0f);
+        TA_SET_GDL(BUFA, EMISSION);
+        texanim_lframe(&state);
+        state.gpr[3] = PKT;
+        on_end_diff(&state);
+        texanim_rframe(&state, 0.5f);
+        if (s_ta[0].injected) return 525;   /* prev==curr -> no dirty slot   */
+
+        /* --- L4: teleport-scale texmtx jump -> snap to curr --- */
+        TA_EMIT(BUFB, 200u, 0x30u, 0x4080FF00u, 90.0f, 0.26f, 44.0f);
+        TA_SET_GDL(BUFB, EMISSION);
+        texanim_lframe(&state);
+        state.gpr[3] = PKT;
+        on_end_diff(&state);
+        texanim_rframe(&state, 0.5f);
+        /* 0.02 -> 90: maxd ~90 > 64 -> snap to curr (no dirty write) */
+        if (be_f32(&s_memory[BUFB + OFF_TX0 + 12u - 0x80000000u]) != 90.0f)
+            return 526;
+        /* --- malformed/truncated emission: parser stops, no crash --- */
+        {
+            uint8_t* q = &s_memory[BUFA - 0x80000000u];
+            q[0] = 0x10u; q[1] = 0; q[2] = 7; q[3] = 0; q[4] = 0x78u;
+            q[5] = 0x10u;   /* truncated XF header at the tail              */
+            TA_SET_GDL(BUFA, 6u);
+            texanim_lframe(&state);
+            state.gpr[3] = PKT;
+            on_end_diff(&state);          /* esize changed -> reparse      */
+            if (s_ta[0].nslots != 0u) return 527;
+            texanim_rframe(&state, 0.5f); /* must not write out of bounds  */
+        }
+        texanim_restore(&state);
+
+        /* --- kill switch: TEXANIM=0 does not track or patch --- */
+        s_texanim = 0u;
+        memset(s_ta, 0, sizeof(s_ta));
+        memset(s_ta_hash, 0, sizeof(s_ta_hash));
+        s_ta_n = 0;
+        TA_EMIT(BUFB, 200u, 0x30u, 0x4080FF00u, 50.0f, 0.26f, 44.0f);
+        TA_SET_GDL(BUFB, EMISSION);
+        texanim_lframe(&state);
+        state.gpr[3] = PKT;
+        on_end_diff(&state);
+        if (s_ta_n != 0u) return 528;      /* nothing tracked while off      */
+        texanim_rframe(&state, 0.5f);
+        if (be_f32(&s_memory[BUFB + OFF_TX0 + 12u - 0x80000000u]) != 50.0f)
+            return 529;                  /* bytes byte-identical           */
+
+        memset(s_ta, 0, sizeof(s_ta));
+        memset(s_ta_hash, 0, sizeof(s_ta_hash));
+        s_ta_n = 0; s_ta_gen = 0;
+        s_texanim = 1u;
+#undef TA_EMIT
+#undef TA_SET_GDL
+    }
+
     return 0;
 }
