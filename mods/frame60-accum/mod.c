@@ -255,6 +255,7 @@ static uint64_t s_c_snap_ns = 0, s_c_snap_n = 0;  /* j3d_snapshot_pose  (L) */
 static uint64_t s_c_refr_ns = 0, s_c_refr_n = 0;  /* j3d_rframe_refresh (R) */
 static uint64_t s_c_inj_ns  = 0, s_c_inj_n  = 0;  /* j3d_rframe_inject  (R) */
 static uint64_t s_c_frep_ns = 0, s_c_frep_n = 0;  /* fifo_replay_frame  (R) */
+static uint64_t s_c_clo_ns  = 0, s_c_clo_n  = 0;  /* cloth entry+R-frame (L+R) */
 
 /* Forward: env/config reader — runs at mod load, before guest starts. */
 static void frame60_accum_on_load(const ModernGekkoModHostApi* api)
@@ -1488,7 +1489,7 @@ static void frame60_cost_report(void)
         "[f60-cost] wL=%u/%.3fms wR=%u/%.3fms wO=%u/%.3fms wtbL=%.0f wtbR=%.0f "
         "Rw=%.1f%% | cumL=%.3fms cumR=%.3fms cumO=%.3fms cRw=%.1f%% "
         "cumLN=%llu cumRN=%llu | "
-        "snap=%.1fus(%llu) refr=%.1fus(%llu) inj=%.1fus(%llu) frep=%.1fus(%llu)\n",
+        "snap=%.1fus(%llu) refr=%.1fus(%llu) inj=%.1fus(%llu) frep=%.1fus(%llu) clo=%.1fus(%llu)\n",
         s_wl_n, w_l_ms, s_wr_n, w_r_ms, s_wo_n, w_o_ms, w_l_tb, w_r_tb,
         w_rw, c_l_ms, c_r_ms, c_o_ms, c_rw,
         (unsigned long long)s_cost_l_n, (unsigned long long)s_cost_r_n,
@@ -1499,7 +1500,9 @@ static void frame60_cost_report(void)
         s_c_inj_n ? (double)s_c_inj_ns / (double)s_c_inj_n / 1.0e3 : 0.0,
         (unsigned long long)s_c_inj_n,
         s_c_frep_n ? (double)s_c_frep_ns / (double)s_c_frep_n / 1.0e3 : 0.0,
-        (unsigned long long)s_c_frep_n);
+        (unsigned long long)s_c_frep_n,
+        s_c_clo_n ? (double)s_c_clo_ns / (double)s_c_clo_n / 1.0e3 : 0.0,
+        (unsigned long long)s_c_clo_n);
     s_wl_ns = s_wr_ns = s_wo_ns = 0;
     s_wl_tb = s_wr_tb = s_wo_tb = 0;
     s_wl_n = s_wr_n = s_wo_n = 0;
@@ -1766,7 +1769,13 @@ static void on_painter_skip(CPUState* state)
      * (Painter runs before execute inside fpcM_Management), and the DOL
      * draw-hook arm is a leak-safety net. Cheap: zero work unless a flip is
      * outstanding or an L-frame sail packet exists. */
-    cloth_painter_entry(state);
+    if (s_cost) {
+        const uint64_t t0 = host_now_ns();
+        cloth_painter_entry(state);
+        s_c_clo_ns += host_now_ns() - t0; ++s_c_clo_n;
+    } else {
+        cloth_painter_entry(state);
+    }
     if (s_auto_degrade && s_enabled && s_split_mode && s_logic_this_frame &&
         s_rframe_render && s_j3d_interp)
         gov_on_lframe(&s_gov, state->timebase, host_now_ns());
@@ -1945,8 +1954,15 @@ static void on_painter_skip(CPUState* state)
         /* Cloth/sail/flag packets: rel-side interpolation (OPA/XLU drawbuf
          * walk — flips restored at next Painter entry). DOL-side cloth is
          * handled inside Painter by the dCloth_packet_c::draw hooks. */
-        if (s_cloth_interp && !s_noinject)
-            cloth_rframe(state, s_interp_alpha);
+        if (s_cloth_interp && !s_noinject) {
+            if (s_cost) {
+                const uint64_t t0 = host_now_ns();
+                cloth_rframe(state, s_interp_alpha);
+                s_c_clo_ns += host_now_ns() - t0; ++s_c_clo_n;
+            } else {
+                cloth_rframe(state, s_interp_alpha);
+            }
+        }
         /* Present-path fix: at 60Hz the R-frame's beginRender always finds
          * drawn != displaying (the L-frame's XFB has not been consumed by VI
          * yet), so exchangeXfb_double takes its else-branch — clearEfb wipes
@@ -5120,6 +5136,7 @@ static void f60_reset_runtime_state(CPUState* st)
     s_c_refr_ns = s_c_refr_n = 0;
     s_c_inj_ns = s_c_inj_n = 0;
     s_c_frep_ns = s_c_frep_n = 0;
+    s_c_clo_ns = s_c_clo_n = 0;
     s_dbg_jfast = s_dbg_jmiss = 0;
     s_dbg_lframes = s_dbg_rframes = 0;
     s_dbg_snapcall = s_dbg_skipni = 0;
